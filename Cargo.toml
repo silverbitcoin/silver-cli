@@ -45,5 +45,12 @@ config = { workspace = true }
 dotenv = { workspace = true }
 toml = { workspace = true }
 
+# System
+dirs = "5.0"
+
+# Unix-specific
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

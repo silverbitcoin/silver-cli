@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use silver_core::SignatureScheme;
 use std::path::PathBuf;
 
-use commands::{CallCommand, DevNetCommand, KeygenCommand, QueryCommand, TransferCommand};
+use commands::{CallCommand, CodegenCommand, DevNetCommand, KeygenCommand, QueryCommand, SimulateCommand, TransferCommand};
 
 #[derive(Parser)]
 #[command(name = "silver")]
@@ -72,6 +72,35 @@ enum Commands {
     /// Development network commands
     #[command(subcommand)]
     DevNet(DevNetCommands),
+    
+    /// Generate Rust bindings from Quantum modules
+    Codegen {
+        /// Path to Quantum source file
+        #[arg(short, long)]
+        source: Option<PathBuf>,
+        /// Path to compiled bytecode file
+        #[arg(short, long)]
+        bytecode: Option<PathBuf>,
+        /// Output file path (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    
+    /// Simulate transaction execution without submitting to network
+    Simulate {
+        /// Transaction type: transfer, call
+        #[arg(short, long)]
+        tx_type: String,
+        /// Transaction parameters (JSON)
+        #[arg(short, long)]
+        params: String,
+        /// Sender address or key file
+        #[arg(short, long)]
+        sender: Option<String>,
+        /// RPC endpoint URL
+        #[arg(short, long, default_value = "http://localhost:9545")]
+        rpc_url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -230,6 +259,18 @@ fn main() -> Result<()> {
             CallCommand::call(&package, &module, &function, args, type_args, fuel_budget)
         }
         Commands::DevNet(cmd) => handle_devnet(cmd),
+        Commands::Codegen { source, bytecode, output } => {
+            let cmd = CodegenCommand {
+                source,
+                bytecode,
+                output,
+                module_helper: true,
+            };
+            cmd.execute()
+        }
+        Commands::Simulate { tx_type, params, sender, rpc_url } => {
+            SimulateCommand::simulate(&tx_type, &params, sender, &rpc_url)
+        }
     }
 }
 
