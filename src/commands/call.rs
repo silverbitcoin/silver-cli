@@ -1,0 +1,213 @@
+//! Quantum function call commands
+
+use anyhow::{Context, Result};
+use colored::Colorize;
+use silver_core::{ObjectID, ObjectRef, SequenceNumber, TransactionDigest};
+use silver_crypto::KeyPair;
+use silver_core::transaction::TypeTag;
+use silver_sdk::{CallArgBuilder, TransactionBuilder, TypeTagBuilder};
+use std::fs;
+use std::path::PathBuf;
+
+/// Call command
+pub struct CallCommand;
+
+impl CallCommand {
+    /// Call a Quantum function
+    pub fn call(
+        package: &str,
+        module: &str,
+        function: &str,
+        args: Vec<String>,
+        type_args: Vec<String>,
+        fuel_budget: Option<u64>,
+    ) -> Result<()> {
+        println!("{}", "🔮 Preparing Quantum function call...".cyan().bold());
+        
+        // Parse package ID
+        let package_bytes = hex::decode(package)
+            .context("Invalid package ID (must be hex)")?;
+        
+        if package_bytes.len() != 64 {
+            anyhow::bail!("Package ID must be 64 bytes (128 hex characters)");
+        }
+        
+        let mut package_array = [0u8; 64];
+        package_array.copy_from_slice(&package_bytes);
+        let package_id = ObjectID::new(package_array);
+        
+        println!("Package: {}", package);
+        println!("Module: {}", module);
+        println!("Function: {}", function);
+        println!("Arguments: {:?}", args);
+        println!("Type arguments: {:?}", type_args);
+        
+        // Parse type arguments
+        let type_arguments = Self::parse_type_args(&type_args)?;
+        
+        // Parse function arguments
+        let arguments = Self::parse_call_args(&args)?;
+        
+        // Load sender keypair
+        let keypair = Self::load_default_keypair()?;
+        let sender = keypair.address();
+        
+        println!("\nSender: {}", hex::encode(sender.as_bytes()));
+        
+        // Get fuel payment object
+        println!("\n{}", "⚠️  Note: Simplified implementation".yellow());
+        println!("In production, the CLI would query your owned objects from RPC");
+        
+        let fuel_payment = Self::prompt_fuel_payment()?;
+        
+        // Build transaction
+        let fuel_budget = fuel_budget.unwrap_or(50_000); // Higher default for contract calls
+        let fuel_price = 1000;
+        
+        println!("\n{}", "Building transaction...".cyan());
+        println!("Fuel budget: {} units", fuel_budget);
+        println!("Fuel price: {} MIST/unit", fuel_price);
+        
+        let transaction = TransactionBuilder::new()
+            .sender(sender)
+            .fuel_payment(fuel_payment)
+            .fuel_budget(fuel_budget)
+            .fuel_price(fuel_price)
+            .call(package_id, module, function, type_arguments, arguments)?
+            .build_and_sign(&keypair)
+            .context("Failed to build and sign transaction")?;
+        
+        println!("\n{}", "✓ Transaction built and signed!".green().bold());
+        
+        // Display transaction details
+        println!("\n{}", "Transaction Details:".yellow().bold());
+        println!("Digest: {}", hex::encode(transaction.digest().as_bytes()));
+        println!("Sender: {}", hex::encode(transaction.sender().as_bytes()));
+        println!("Fuel budget: {}", transaction.fuel_budget());
+        
+        // Serialize and save
+        let tx_bytes = bincode::serialize(&transaction)
+            .context("Failed to serialize transaction")?;
+        
+        let tx_file = PathBuf::from("call_transaction.bin");
+        fs::write(&tx_file, &tx_bytes)
+            .context("Failed to write transaction to file")?;
+        
+        println!("\n{}", format!("✓ Transaction saved to: {}", tx_file.display()).green());
+        println!("\n{}", "Submit with: silver submit call_transaction.bin".cyan());
+        
+        Ok(())
+    }
+    
+    /// Parse type arguments from strings
+    fn parse_type_args(type_args: &[String]) -> Result<Vec<TypeTag>> {
+        let mut result = Vec::new();
+        
+        for arg in type_args {
+            let type_tag = match arg.as_str() {
+                "bool" => TypeTagBuilder::bool(),
+                "u8" => TypeTagBuilder::u8(),
+                "u64" => TypeTagBuilder::u64(),
+                "u128" => TypeTagBuilder::u128(),
+                "address" => TypeTagBuilder::address(),
+                s if s.starts_with("vector<") && s.ends_with('>') => {
+                    let inner = &s[7..s.len() - 1];
+                    let inner_type = Self::parse_type_args(&[inner.to_string()])?;
+                    if inner_type.len() != 1 {
+                        anyhow::bail!("Invalid vector type: {}", s);
+                    }
+                    TypeTagBuilder::vector(inner_type[0].clone())
+                }
+                _ => anyhow::bail!("Unsupported type argument: {}", arg),
+            };
+            result.push(type_tag);
+        }
+        
+        Ok(result)
+    }
+    
+    /// Parse call arguments from strings
+    fn parse_call_args(args: &[String]) -> Result<Vec<silver_core::transaction::CallArg>> {
+        let mut result = Vec::new();
+        
+        for arg in args {
+            // Try to parse as JSON
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(arg) {
+                // Serialize the JSON value as pure bytes
+                let bytes = bincode::serialize(&json_value)
+                    .context("Failed to serialize argument")?;
+                result.push(CallArgBuilder::pure(bytes));
+            } else {
+                // Try as hex-encoded bytes
+                if let Ok(bytes) = hex::decode(arg) {
+                    result.push(CallArgBuilder::pure(bytes));
+                } else {
+                    anyhow::bail!("Invalid argument format: {}", arg);
+                }
+            }
+        }
+        
+        Ok(result)
+    }
+    
+    /// Load default keypair
+    fn load_default_keypair() -> Result<KeyPair> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let key_path = format!("{}/.silver/keypair", home);
+        
+        if !std::path::Path::new(&key_path).exists() {
+            anyhow::bail!(
+                "Keypair file not found: {}\n\
+                 Generate a keypair with: silver keygen generate --output {}",
+                key_path,
+                key_path
+            );
+        }
+        
+        // For now, just generate a new keypair (simplified)
+        KeyPair::generate(silver_core::SignatureScheme::Dilithium3)
+            .context("Failed to generate keypair")
+    }
+    
+    /// Prompt for fuel payment object
+    fn prompt_fuel_payment() -> Result<ObjectRef> {
+        println!("\n{}", "Fuel Payment Object:".yellow().bold());
+        
+        let object_id = dialoguer::Input::<String>::new()
+            .with_prompt("Object ID (hex)")
+            .interact_text()
+            .context("Failed to read object ID")?;
+        
+        let version = dialoguer::Input::<u64>::new()
+            .with_prompt("Object version")
+            .default(0)
+            .interact_text()
+            .context("Failed to read version")?;
+        
+        let digest = dialoguer::Input::<String>::new()
+            .with_prompt("Object digest (hex)")
+            .interact_text()
+            .context("Failed to read digest")?;
+        
+        let object_id_bytes = hex::decode(&object_id)
+            .context("Invalid object ID hex")?;
+        let digest_bytes = hex::decode(&digest)
+            .context("Invalid digest hex")?;
+        
+        if object_id_bytes.len() != 64 || digest_bytes.len() != 64 {
+            anyhow::bail!("Object ID and digest must be 64 bytes each");
+        }
+        
+        let mut oid_array = [0u8; 64];
+        oid_array.copy_from_slice(&object_id_bytes);
+        
+        let mut digest_array = [0u8; 64];
+        digest_array.copy_from_slice(&digest_bytes);
+        
+        Ok(ObjectRef::new(
+            ObjectID::new(oid_array),
+            SequenceNumber::new(version),
+            TransactionDigest::new(digest_array),
+        ))
+    }
+}
