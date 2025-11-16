@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use silver_core::{SilverAddress, ObjectID, SignatureScheme};
+use silver_core::{SilverAddress, SignatureScheme};
 use silver_crypto::KeyPair;
-use silver_sdk::{SilverClient, TransactionBuilder};
+use silver_sdk::SilverClient;
 
 const DEFAULT_FAUCET_AMOUNT: u64 = 1_000_000_000_000_000; // 1,000,000 SBTC
 const DEVNET_STATE_FILE: &str = ".silver-devnet-state.json";
@@ -412,10 +412,10 @@ log_path = "{}/logs/node.log"
         amount: u64,
     ) -> Result<()> {
         // Connect to the node
-        let client = SilverClient::new(DEVNET_RPC_URL).await?;
+        let _client = SilverClient::new(DEVNET_RPC_URL).await?;
 
         // Get faucet's fuel object
-        let faucet_address = faucet_keypair.address();
+        let _faucet_address = faucet_keypair.address();
         
         // For now, just print a success message since we need to implement the actual RPC methods
         println!("  Note: Faucet transfer would send {} MIST to {}", amount, hex::encode(&recipient.0));

@@ -132,7 +132,7 @@ impl TransferCommand {
             .context("Failed to read keypair file")?;
         
         // Try to parse as hex
-        let private_key_bytes = hex::decode(key_data.trim())
+        let _private_key_bytes = hex::decode(key_data.trim())
             .context("Failed to decode private key (expected hex format)")?;
         
         // For now, assume Dilithium3 scheme

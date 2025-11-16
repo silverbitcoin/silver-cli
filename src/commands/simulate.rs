@@ -49,23 +49,39 @@ pub struct SimulatedEvent {
 /// Transaction parameters for transfer
 #[derive(Debug, Deserialize)]
 struct TransferParams {
+    /// Recipient address
     to: String,
+    /// Amount to transfer (will be used in full implementation)
+    #[allow(dead_code)]
     amount: u64,
+    /// Fuel budget (will be used in full implementation)
     #[serde(default)]
+    #[allow(dead_code)]
     fuel_budget: Option<u64>,
 }
 
 /// Transaction parameters for contract call
 #[derive(Debug, Deserialize)]
 struct CallParams {
+    /// Package ID
     package: String,
+    /// Module name (will be used in full implementation)
+    #[allow(dead_code)]
     module: String,
+    /// Function name (will be used in full implementation)
+    #[allow(dead_code)]
     function: String,
+    /// Function arguments (will be used in full implementation)
     #[serde(default)]
+    #[allow(dead_code)]
     args: Vec<Value>,
+    /// Type arguments (will be used in full implementation)
     #[serde(default)]
+    #[allow(dead_code)]
     type_args: Vec<String>,
+    /// Fuel budget (will be used in full implementation)
     #[serde(default)]
+    #[allow(dead_code)]
     fuel_budget: Option<u64>,
 }
 
@@ -161,8 +177,8 @@ impl SimulateCommand {
     }
 
     async fn execute_simulation(
-        client: &SilverClient,
-        tx_data: Vec<u8>,
+        _client: &SilverClient,
+        _tx_data: Vec<u8>,
     ) -> Result<SimulationResult> {
         // Call simulation endpoint on the node
         // Note: This assumes the node has a simulation endpoint
