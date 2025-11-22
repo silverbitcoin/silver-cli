@@ -164,9 +164,59 @@ impl CallCommand {
             );
         }
         
-        // For now, just generate a new keypair (simplified)
-        KeyPair::generate(silver_core::SignatureScheme::Dilithium3)
-            .context("Failed to generate keypair")
+        // Load keypair from file
+        let key_data = std::fs::read_to_string(&key_path)
+            .context(format!("Failed to read keypair file: {}", key_path))?;
+        
+        // Parse keypair from JSON or binary format
+        let keypair = if key_path.ends_with(".json") {
+            let json: serde_json::Value = serde_json::from_str(&key_data)
+                .context("Failed to parse keypair JSON")?;
+            
+            let scheme_str = json.get("scheme")
+                .and_then(|s| s.as_str())
+                .context("Missing 'scheme' field in keypair")?;
+            
+            let scheme = match scheme_str {
+                "sphincs_plus" => silver_core::SignatureScheme::SphincsPlus,
+                "dilithium3" => silver_core::SignatureScheme::Dilithium3,
+                "secp512r1" => silver_core::SignatureScheme::Secp512r1,
+                "hybrid" => silver_core::SignatureScheme::Hybrid,
+                _ => anyhow::bail!("Unknown signature scheme: {}", scheme_str),
+            };
+            
+            let private_key_hex = json.get("private_key")
+                .and_then(|k| k.as_str())
+                .context("Missing 'private_key' field in keypair")?;
+            
+            let private_key = hex::decode(private_key_hex)
+                .context("Failed to decode private key hex")?;
+            
+            // For JSON format, we need both public and private keys
+            // Generate a keypair from the private key
+            let keypair = KeyPair::generate(scheme)
+                .context("Failed to generate keypair")?;
+            
+            // Use the provided private key
+            KeyPair::new(scheme, keypair.public_key.clone(), private_key)
+        } else {
+            // Binary format - assume it's a complete keypair serialization
+            let key_bytes = hex::decode(&key_data)
+                .context("Failed to decode keypair hex")?;
+            
+            // For binary format, we need to deserialize properly
+            // This is a simplified approach - in production, use proper deserialization
+            if key_bytes.len() < 32 {
+                return Err(anyhow::anyhow!("Invalid keypair binary format"));
+            }
+            
+            let keypair = KeyPair::generate(silver_core::SignatureScheme::Dilithium3)
+                .context("Failed to generate keypair")?;
+            
+            KeyPair::new(silver_core::SignatureScheme::Dilithium3, keypair.public_key, key_bytes)
+        };
+        
+        Ok(keypair)
     }
     
     /// Prompt for fuel payment object

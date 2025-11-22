@@ -152,67 +152,82 @@ impl SimulateCommand {
 
     async fn build_transfer_transaction(
         _client: &SilverClient,
-        _sender: SilverAddress,
+        sender: SilverAddress,
         params: TransferParams,
     ) -> Result<Vec<u8>> {
         // Parse recipient address
-        let _recipient = Self::parse_address(&params.to)?;
+        let recipient = Self::parse_address(&params.to)?;
 
-        // For now, return a mock transaction since we need to implement the full RPC API
-        // This is a placeholder that shows the structure
-        Ok(vec![0u8; 64])
+        // Parse amount
+        let amount: u64 = params.amount.parse()
+            .context("Invalid amount")?;
+
+        // Build transfer transaction
+        let tx_data = TransactionData::new_transfer(
+            sender,
+            recipient,
+            amount,
+            params.fuel_budget.unwrap_or(100_000),
+            params.fuel_price.unwrap_or(1000),
+        );
+
+        // Serialize transaction
+        let tx_bytes = bcs::to_bytes(&tx_data)
+            .context("Failed to serialize transaction")?;
+
+        Ok(tx_bytes)
     }
 
     async fn build_call_transaction(
-        _client: &SilverClient,
-        _sender: SilverAddress,
+        client: &SilverClient,
+        sender: SilverAddress,
         params: CallParams,
     ) -> Result<Vec<u8>> {
         // Parse package ID
-        let _package_id = Self::parse_object_id(&params.package)?;
+        let package_id = Self::parse_object_id(&params.package)?;
 
-        // For now, return a mock transaction since we need to implement the full RPC API
-        // This is a placeholder that shows the structure
-        Ok(vec![0u8; 64])
+        // Parse module and function
+        let module = params.module.clone();
+        let function = params.function.clone();
+
+        // Parse type arguments
+        let type_args: Vec<TypeTag> = params.type_args
+            .iter()
+            .map(|t| Self::parse_type_tag(t))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Parse arguments
+        let args: Vec<CallArg> = params.args
+            .iter()
+            .map(|a| Self::parse_call_arg(a))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Build call transaction
+        let tx_data = TransactionData::new_call(
+            sender,
+            package_id,
+            module,
+            function,
+            type_args,
+            args,
+            params.fuel_budget.unwrap_or(100_000),
+            params.fuel_price.unwrap_or(1000),
+        );
+
+        // Serialize transaction
+        let tx_bytes = bcs::to_bytes(&tx_data)
+            .context("Failed to serialize transaction")?;
+
+        Ok(tx_bytes)
     }
 
     async fn execute_simulation(
-        _client: &SilverClient,
-        _tx_data: Vec<u8>,
+        client: &SilverClient,
+        tx_data: Vec<u8>,
     ) -> Result<SimulationResult> {
-        // Call simulation endpoint on the node
-        // Note: This assumes the node has a simulation endpoint
-        // In a real implementation, this would call a dedicated RPC method
-        
-        // For now, we'll create a mock simulation result based on transaction analysis
-        let result = SimulationResult {
-            success: true,
-            status: "Simulation successful".to_string(),
-            fuel_used: 50_000,
-            fuel_budget_required: 100_000,
-            objects_created: vec![],
-            objects_modified: vec!["0x1234...".to_string()],
-            objects_deleted: vec![],
-            events: vec![
-                SimulatedEvent {
-                    event_type: "TransferEvent".to_string(),
-                    data: serde_json::json!({
-                        "sender": "0xabcd...",
-                        "recipient": "0xef01...",
-                        "amount": 1000,
-                    }),
-                },
-            ],
-            error: None,
-            execution_trace: vec![
-                "1. Validate transaction signature".to_string(),
-                "2. Check fuel budget sufficiency".to_string(),
-                "3. Load input objects".to_string(),
-                "4. Execute transaction commands".to_string(),
-                "5. Apply state changes".to_string(),
-                "6. Emit events".to_string(),
-            ],
-        };
+        // Call simulation endpoint on the node via RPC
+        let result = client.simulate_transaction(&tx_data).await
+            .context("Failed to simulate transaction")?;
 
         Ok(result)
     }

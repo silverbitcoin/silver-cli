@@ -42,19 +42,28 @@ impl TransferCommand {
         
         println!("Sender: {}", hex::encode(sender.as_bytes()));
         
-        // For now, we need to get the fuel payment object from the user
-        // In a real implementation, we'd query the RPC to get owned objects
-        println!("\n{}", "⚠️  Note: This is a simplified implementation".yellow());
-        println!("In production, the CLI would:");
-        println!("  1. Query your owned coin objects from the RPC");
-        println!("  2. Select an appropriate coin for fuel payment");
-        println!("  3. Automatically split/merge coins as needed");
+        // Query RPC to get owned objects
+        let client = SilverClient::new(&rpc_url)?;
+        let owned_objects = client.get_owned_objects(&sender).await?;
         
-        // Get fuel payment object from user
-        let fuel_payment = Self::prompt_fuel_payment()?;
+        if owned_objects.is_empty() {
+            return Err(anyhow::anyhow!("No owned objects found for sender"));
+        }
         
-        // Get object to transfer
-        let transfer_object = Self::prompt_transfer_object()?;
+        // Find a suitable coin for fuel payment
+        let fuel_payment = Self::select_fuel_payment(&owned_objects)?;
+        
+        // Find object to transfer (if not specified)
+        let transfer_object = if let Some(obj_id) = object_id {
+            ObjectRef::new(
+                ObjectID::from_str(&obj_id)?,
+                SequenceNumber::initial(),
+                TransactionDigest::new([0u8; 64]),
+            )
+        } else {
+            // Let user select from owned objects
+            Self::select_transfer_object(&owned_objects)?
+        };
         
         // Build transaction
         let fuel_budget = fuel_budget.unwrap_or(10_000);
@@ -152,7 +161,57 @@ impl TransferCommand {
         Ok(keypair)
     }
     
-    /// Prompt user for fuel payment object
+    /// Select fuel payment object from owned objects
+    fn select_fuel_payment(owned_objects: &[Object]) -> Result<ObjectRef> {
+        // Find a coin object suitable for fuel payment
+        for obj in owned_objects {
+            if obj.object_type.name == "Coin" {
+                // Check if it has sufficient balance for fuel
+                if let Ok(balance) = obj.get_field("balance") {
+                    if let Ok(amount) = bcs::from_bytes::<u64>(&balance) {
+                        if amount >= 1_000_000 { // At least 1 SBTC
+                            return Ok(ObjectRef::new(
+                                obj.id.clone(),
+                                obj.version.clone(),
+                                obj.digest.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        
+        Err(anyhow::anyhow!("No suitable coin found for fuel payment"))
+    }
+
+    /// Select object to transfer from owned objects
+    fn select_transfer_object(owned_objects: &[Object]) -> Result<ObjectRef> {
+        if owned_objects.is_empty() {
+            return Err(anyhow::anyhow!("No objects available to transfer"));
+        }
+
+        // Display available objects
+        println!("\n{}", "Available objects:".cyan().bold());
+        for (i, obj) in owned_objects.iter().enumerate() {
+            println!("  [{}] {} ({})", i, obj.id, obj.object_type.name);
+        }
+
+        // Let user select
+        let selection = dialoguer::Select::new()
+            .with_prompt("Select object to transfer")
+            .items(&owned_objects.iter().map(|o| format!("{}", o.id)).collect::<Vec<_>>())
+            .interact()
+            .context("Failed to select object")?;
+
+        let obj = &owned_objects[selection];
+        Ok(ObjectRef::new(
+            obj.id.clone(),
+            obj.version.clone(),
+            obj.digest.clone(),
+        ))
+    }
+
+    /// Prompt user for fuel payment object (fallback)
     fn prompt_fuel_payment() -> Result<ObjectRef> {
         println!("\n{}", "Fuel Payment Object:".yellow().bold());
         println!("Enter the object to use for fuel payment");
