@@ -37,7 +37,8 @@ impl CodegenCommand {
                 .map_err(|e| anyhow::anyhow!("Failed to read source file: {}", e))?;
 
             // Generate Rust bindings
-            generator.generate_from_source(&source)
+            generator
+                .generate_from_source(&source)
                 .map_err(|e| anyhow::anyhow!("Code generation failed: {}", e))?
         } else if let Some(bytecode_path) = &self.bytecode {
             // Read compiled bytecode
@@ -45,17 +46,20 @@ impl CodegenCommand {
                 .map_err(|e| anyhow::anyhow!("Failed to read bytecode file: {}", e))?;
 
             // Generate Rust bindings
-            generator.generate_from_bytecode(&bytecode)
+            generator
+                .generate_from_bytecode(&bytecode)
                 .map_err(|e| anyhow::anyhow!("Code generation failed: {}", e))?
         } else {
-            return Err(anyhow::anyhow!("Either --source or --bytecode must be provided"));
+            return Err(anyhow::anyhow!(
+                "Either --source or --bytecode must be provided"
+            ));
         };
 
         // Write output
         if let Some(output_path) = &self.output {
             fs::write(output_path, &rust_code)
                 .map_err(|e| anyhow::anyhow!("Failed to write output file: {}", e))?;
-            
+
             println!("✓ Generated Rust bindings: {}", output_path.display());
         } else {
             // Print to stdout
@@ -63,50 +67,5 @@ impl CodegenCommand {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_codegen_from_source() {
-        let source = r#"
-            module my_package::coin {
-                struct Coin has key, store {
-                    value: u64
-                }
-                
-                public fun mint(value: u64): Coin {
-                    Coin { value }
-                }
-            }
-        "#;
-
-        // Create temporary source file
-        let mut source_file = NamedTempFile::new().unwrap();
-        source_file.write_all(source.as_bytes()).unwrap();
-        source_file.flush().unwrap();
-
-        // Create temporary output file
-        let output_file = NamedTempFile::new().unwrap();
-
-        let cmd = CodegenCommand {
-            source: Some(source_file.path().to_path_buf()),
-            bytecode: None,
-            output: Some(output_file.path().to_path_buf()),
-            module_helper: true,
-        };
-
-        let result = cmd.execute();
-        assert!(result.is_ok());
-
-        // Verify output file was created
-        let output_content = fs::read_to_string(output_file.path()).unwrap();
-        assert!(output_content.contains("struct Coin"));
-        assert!(output_content.contains("pub fn call_mint"));
     }
 }

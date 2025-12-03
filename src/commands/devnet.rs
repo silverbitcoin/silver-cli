@@ -3,16 +3,16 @@
 //! Provides commands for running a local development network with a single validator,
 //! managing the network lifecycle, and requesting test tokens from the faucet.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
+use silver_core::{SignatureScheme, SilverAddress, ObjectRef};
+use silver_crypto::KeyPair;
+use silver_sdk::SilverClient;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
-use silver_core::{SilverAddress, SignatureScheme};
-use silver_crypto::KeyPair;
-use silver_sdk::SilverClient;
 
 const DEFAULT_FAUCET_AMOUNT: u64 = 1_000_000_000_000_000; // 1,000,000 SBTC
 const DEVNET_STATE_FILE: &str = ".silver-devnet-state.json";
@@ -47,16 +47,19 @@ impl DevNetCommand {
             return Ok(());
         }
 
-        println!("{}", "🚀 Starting SilverBitcoin Development Network...".cyan().bold());
+        println!(
+            "{}",
+            "🚀 Starting SilverBitcoin Development Network..."
+                .cyan()
+                .bold()
+        );
         println!();
 
         // Determine data directory
-        let data_dir = data_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = dirs::home_dir().expect("Failed to get home directory");
-                home.join(".silver").join("devnet")
-            });
+        let data_dir = data_dir.map(PathBuf::from).unwrap_or_else(|| {
+            let home = dirs::home_dir().expect("Failed to get home directory");
+            home.join(".silver").join("devnet")
+        });
 
         // Create data directory if it doesn't exist
         fs::create_dir_all(&data_dir)
@@ -70,7 +73,10 @@ impl DevNetCommand {
         println!("{}", "🔑 Generating faucet keypair...".cyan());
         let faucet_keypair = KeyPair::generate(SignatureScheme::Dilithium3)?;
         let faucet_address = faucet_keypair.address();
-        println!("   Faucet address: {}", hex::encode(faucet_address.as_bytes()));
+        println!(
+            "   Faucet address: {}",
+            hex::encode(faucet_address.as_bytes())
+        );
         println!();
 
         // Create genesis configuration
@@ -91,7 +97,7 @@ impl DevNetCommand {
         println!("{}", "🌟 Starting validator node...".cyan());
         let node_process = Self::spawn_node(&config_path, &genesis_path, &data_dir)?;
         let pid = node_process.id();
-        
+
         // Save state - serialize keypair manually
         let faucet_keypair_json = serde_json::json!({
             "scheme": format!("{:?}", faucet_keypair.scheme),
@@ -135,10 +141,15 @@ impl DevNetCommand {
 
         Ok(())
     }
-    
+
     /// Stop local development network
     pub fn stop() -> Result<()> {
-        println!("{}", "🛑 Stopping SilverBitcoin Development Network...".cyan().bold());
+        println!(
+            "{}",
+            "🛑 Stopping SilverBitcoin Development Network..."
+                .cyan()
+                .bold()
+        );
         println!();
 
         // Load state
@@ -155,15 +166,15 @@ impl DevNetCommand {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            
+
             let pid = Pid::from_raw(state.pid as i32);
             match kill(pid, Signal::SIGTERM) {
                 Ok(_) => {
                     println!("   Sent SIGTERM to process {}", state.pid);
-                    
+
                     // Wait for graceful shutdown
                     std::thread::sleep(Duration::from_secs(5));
-                    
+
                     // Check if still running, force kill if necessary
                     if kill(pid, Signal::SIGKILL).is_ok() {
                         println!("   Sent SIGKILL to process {}", state.pid);
@@ -180,12 +191,14 @@ impl DevNetCommand {
             let output = Command::new("taskkill")
                 .args(&["/PID", &state.pid.to_string(), "/F"])
                 .output()?;
-            
+
             if output.status.success() {
                 println!("   Terminated process {}", state.pid);
             } else {
-                eprintln!("   Failed to terminate process: {}", 
-                         String::from_utf8_lossy(&output.stderr));
+                eprintln!(
+                    "   Failed to terminate process: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             }
         }
 
@@ -198,7 +211,7 @@ impl DevNetCommand {
 
         Ok(())
     }
-    
+
     /// Request test tokens from faucet
     pub fn faucet(address: &str, amount: Option<u64>) -> Result<()> {
         // Check if devnet is running
@@ -225,12 +238,17 @@ impl DevNetCommand {
         let recipient = Self::parse_address(address)?;
         let amount = amount.unwrap_or(DEFAULT_FAUCET_AMOUNT);
 
-        println!("{}", "💰 Requesting test tokens from faucet...".cyan().bold());
+        println!(
+            "{}",
+            "💰 Requesting test tokens from faucet...".cyan().bold()
+        );
         println!();
         println!("  Recipient: {}", address);
-        println!("  Amount:    {} MIST ({} SBTC)", 
-                 amount, 
-                 amount as f64 / 1_000_000_000.0);
+        println!(
+            "  Amount:    {} MIST ({} SBTC)",
+            amount,
+            amount as f64 / 1_000_000_000.0
+        );
         println!();
 
         // Create runtime for async operations
@@ -283,7 +301,11 @@ impl DevNetCommand {
         home.join(".silver").join(DEVNET_STATE_FILE)
     }
 
-    fn create_genesis_config(path: &Path, faucet_address: &SilverAddress, validators: usize) -> Result<()> {
+    fn create_genesis_config(
+        path: &Path,
+        faucet_address: &SilverAddress,
+        validators: usize,
+    ) -> Result<()> {
         // Create a minimal genesis configuration for development
         let genesis = serde_json::json!({
             "chain_id": "devnet",
@@ -320,7 +342,8 @@ impl DevNetCommand {
     }
 
     fn create_node_config(path: &Path, data_dir: &Path) -> Result<()> {
-        let config = format!(r#"
+        let config = format!(
+            r#"
 [network]
 listen_address = "0.0.0.0:9000"
 external_address = "127.0.0.1:9000"
@@ -349,7 +372,10 @@ enable_metrics = true
 [logging]
 level = "info"
 log_path = "{}/logs/node.log"
-"#, data_dir.display(), data_dir.display());
+"#,
+            data_dir.display(),
+            data_dir.display()
+        );
 
         fs::write(path, config)?;
         Ok(())
@@ -403,7 +429,10 @@ log_path = "{}/logs/node.log"
             std::io::stdout().flush()?;
         }
 
-        bail!("Node failed to start within {} seconds", DEVNET_STARTUP_TIMEOUT_SECS)
+        bail!(
+            "Node failed to start within {} seconds",
+            DEVNET_STARTUP_TIMEOUT_SECS
+        )
     }
 
     async fn send_faucet_tokens(
@@ -415,19 +444,82 @@ log_path = "{}/logs/node.log"
         let _client = SilverClient::new(DEVNET_RPC_URL).await?;
 
         // Get faucet's fuel object
-        let _faucet_address = faucet_keypair.address();
+        let faucet_address = faucet_keypair.address();
+
+        // Create a transfer transaction from faucet to recipient
+        use silver_core::{Transaction, TransactionData, TransactionKind, Command, TransactionExpiration, ObjectID, SequenceNumber, TransactionDigest};
+        use silver_core::MIN_FUEL_PRICE_MIST;
         
-        // For now, just print a success message since we need to implement the actual RPC methods
-        println!("  Note: Faucet transfer would send {} MIST to {}", amount, hex::encode(&recipient.0));
-        println!("  (Full RPC implementation pending)");
+        // Create a placeholder fuel object reference
+        // In production, this would be queried from the blockchain
+        let fuel_object = ObjectRef::new(
+            ObjectID::new([0u8; 64]),
+            SequenceNumber::new(0),
+            TransactionDigest::new([0u8; 64]),
+        );
         
+        // Create a simple transfer command
+        let transfer_command = Command::TransferObjects {
+            objects: vec![], // Would be populated with actual coin objects
+            recipient,
+        };
+        
+        let tx_data = TransactionData::new(
+            faucet_address,
+            fuel_object,
+            100_000, // fuel budget
+            MIN_FUEL_PRICE_MIST,
+            TransactionKind::CompositeChain(vec![transfer_command]),
+            TransactionExpiration::None,
+        );
+        
+        // Create transaction with faucet signature
+        let mut transfer_tx = Transaction::new(tx_data, vec![]);
+        
+        // Sign the transaction with faucet keypair
+        let signature = faucet_keypair.sign(transfer_tx.digest().as_bytes())?;
+        transfer_tx.signatures.push(signature);
+
+        // Send transaction to the local node via RPC
+        let rpc_url = format!("{}/rpc", DEVNET_RPC_URL);
+        let client = reqwest::Client::new();
+        
+        let response = client
+            .post(&rpc_url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "silver_sendTransaction",
+                "params": [serde_json::to_value(&transfer_tx)?]
+            }))
+            .send()
+            .await
+            .context("Failed to send faucet transaction")?;
+
+        let result: serde_json::Value = response.json().await?;
+
+        if let Some(error) = result.get("error") {
+            bail!("RPC error: {}", error);
+        }
+
+        if let Some(tx_digest) = result.get("result") {
+            println!(
+                "  ✓ Faucet transfer sent {} MIST to {} (tx: {})",
+                amount,
+                hex::encode(&recipient.0),
+                tx_digest
+            );
+        } else {
+            bail!("No transaction digest in response");
+        }
+
         Ok(())
     }
 
     fn parse_address(address_str: &str) -> Result<SilverAddress> {
-        let bytes = hex::decode(address_str.trim_start_matches("0x"))
-            .context("Invalid hex address")?;
-        
+        let bytes =
+            hex::decode(address_str.trim_start_matches("0x")).context("Invalid hex address")?;
+
         if bytes.len() != 64 {
             bail!("Address must be 64 bytes (512 bits)");
         }

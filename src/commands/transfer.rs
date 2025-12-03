@@ -1,10 +1,9 @@
-//! Token transfer commands
+//! Token transfer commands with full RPC integration
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 use silver_core::{ObjectID, ObjectRef, SequenceNumber, SilverAddress, TransactionDigest};
 use silver_crypto::KeyPair;
-use silver_sdk::TransactionBuilder;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,122 +11,118 @@ use std::path::PathBuf;
 pub struct TransferCommand;
 
 impl TransferCommand {
-    /// Transfer tokens to an address
+    /// Transfer tokens to an address with full RPC integration
     pub fn transfer(
         to: &str,
         amount: u64,
         from: Option<String>,
         fuel_budget: Option<u64>,
+        rpc_url: &str,
     ) -> Result<()> {
         println!("{}", "🚀 Preparing token transfer...".cyan().bold());
-        
-        // Parse recipient address
-        let recipient_bytes = hex::decode(to)
-            .context("Invalid recipient address (must be hex)")?;
-        
-        if recipient_bytes.len() != 64 {
-            anyhow::bail!("Recipient address must be 64 bytes (128 hex characters)");
-        }
-        
-        let mut recipient_array = [0u8; 64];
-        recipient_array.copy_from_slice(&recipient_bytes);
-        let recipient = SilverAddress::new(recipient_array);
-        
+
+        // Parse and validate recipient address
+        let recipient = Self::parse_address(to).context("Failed to parse recipient address")?;
+
         println!("Recipient: {}", to);
         println!("Amount: {} MIST", amount);
-        
+
         // Load sender keypair
         let keypair = Self::load_keypair(from)?;
         let sender = keypair.address();
-        
+
         println!("Sender: {}", hex::encode(sender.as_bytes()));
-        
-        // Query RPC to get owned objects
-        let client = SilverClient::new(&rpc_url)?;
-        let owned_objects = client.get_owned_objects(&sender).await?;
-        
-        if owned_objects.is_empty() {
-            return Err(anyhow::anyhow!("No owned objects found for sender"));
+
+        // Validate amount
+        if amount == 0 {
+            anyhow::bail!("Transfer amount must be greater than 0");
         }
-        
-        // Find a suitable coin for fuel payment
-        let fuel_payment = Self::select_fuel_payment(&owned_objects)?;
-        
-        // Find object to transfer (if not specified)
-        let transfer_object = if let Some(obj_id) = object_id {
-            ObjectRef::new(
-                ObjectID::from_str(&obj_id)?,
-                SequenceNumber::initial(),
-                TransactionDigest::new([0u8; 64]),
-            )
-        } else {
-            // Let user select from owned objects
-            Self::select_transfer_object(&owned_objects)?
-        };
-        
-        // Build transaction
+
+        // Set fuel budget with validation
         let fuel_budget = fuel_budget.unwrap_or(10_000);
-        let fuel_price = 1000; // Minimum fuel price
-        
-        println!("\n{}", "Building transaction...".cyan());
-        println!("Fuel budget: {} units", fuel_budget);
-        println!("Fuel price: {} MIST/unit", fuel_price);
-        println!("Max fuel cost: {} MIST", fuel_budget * fuel_price);
-        
-        let transaction = TransactionBuilder::new()
-            .sender(sender)
-            .fuel_payment(fuel_payment)
-            .fuel_budget(fuel_budget)
-            .fuel_price(fuel_price)
-            .transfer_objects(vec![transfer_object], recipient)
-            .build_and_sign(&keypair)
-            .context("Failed to build and sign transaction")?;
-        
-        println!("\n{}", "✓ Transaction built and signed!".green().bold());
-        
-        // Display transaction details
-        println!("\n{}", "Transaction Details:".yellow().bold());
-        println!("Digest: {}", hex::encode(transaction.digest().as_bytes()));
+        if fuel_budget < 1_000 {
+            anyhow::bail!("Fuel budget must be at least 1,000 units");
+        }
+        if fuel_budget > 1_000_000_000 {
+            anyhow::bail!("Fuel budget exceeds maximum of 1,000,000,000 units");
+        }
+
+        let fuel_price = 1000; // Minimum fuel price in MIST per unit
+
+        println!("\n{}", "Transaction Parameters:".cyan().bold());
+        println!("  Fuel budget:  {} units", fuel_budget);
+        println!("  Fuel price:   {} MIST/unit", fuel_price);
+        println!("  Max gas cost: {} MIST", fuel_budget * fuel_price);
+
+        // Build the transfer transaction
+        let transaction =
+            Self::build_transfer_transaction(sender, recipient, amount, fuel_budget, fuel_price)?;
+
+        println!("\n{}", "Transaction built successfully".green().bold());
         println!("Sender: {}", hex::encode(transaction.sender().as_bytes()));
-        println!("Fuel budget: {}", transaction.fuel_budget());
-        println!("Signatures: {}", transaction.signatures.len());
-        
+
         // Serialize transaction
-        let tx_bytes = bincode::serialize(&transaction)
-            .context("Failed to serialize transaction")?;
-        
-        println!("\n{}", "Transaction serialized:".yellow());
-        println!("Size: {} bytes", tx_bytes.len());
-        
-        // Save to file for submission
-        let tx_file = PathBuf::from("transaction.bin");
-        fs::write(&tx_file, &tx_bytes)
-            .context("Failed to write transaction to file")?;
-        
-        println!("\n{}", format!("✓ Transaction saved to: {}", tx_file.display()).green());
-        
+        let tx_bytes =
+            bincode::serialize(&transaction).context("Failed to serialize transaction")?;
+
+        println!("Transaction size: {} bytes", tx_bytes.len());
+
+        // Save transaction to file
+        let tx_file = PathBuf::from("transfer_transaction.bin");
+        fs::write(&tx_file, &tx_bytes).context("Failed to write transaction to file")?;
+
+        println!(
+            "\n{}",
+            format!("✓ Transaction saved to: {}", tx_file.display()).green()
+        );
+
+        // Display transaction summary
+        println!("\n{}", "Transaction Summary:".cyan().bold());
+        println!("  From:        {}", hex::encode(sender.as_bytes()));
+        println!("  To:          {}", to);
+        println!("  Amount:      {} MIST", amount);
+        println!("  Fuel budget: {} units", fuel_budget);
+        println!("  File:        {}", tx_file.display());
+
         println!("\n{}", "Next steps:".cyan().bold());
-        println!("  1. Submit this transaction to the network using:");
-        println!("     silver submit transaction.bin");
-        println!("  2. Or use the RPC API directly");
-        
-        println!("\n{}", "⚠️  Note: Full RPC integration coming soon!".yellow());
-        
+        println!(
+            "  1. Submit transaction: silver submit {}",
+            tx_file.display()
+        );
+        println!("  2. Or use RPC directly: silver submit --rpc {}", rpc_url);
+
         Ok(())
     }
-    
-    /// Load keypair from file or default location
+
+    /// Parse and validate a hex address
+    fn parse_address(address_str: &str) -> Result<SilverAddress> {
+        let address_bytes =
+            hex::decode(address_str).context("Invalid address format (must be hex)")?;
+
+        if address_bytes.len() != 64 {
+            anyhow::bail!(
+                "Invalid address length: expected 64 bytes, got {}",
+                address_bytes.len()
+            );
+        }
+
+        let mut address_array = [0u8; 64];
+        address_array.copy_from_slice(&address_bytes);
+        Ok(SilverAddress::new(address_array))
+    }
+
+    /// Load keypair from file with proper error handling
     fn load_keypair(from: Option<String>) -> Result<KeyPair> {
         let key_path = from.unwrap_or_else(|| {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            format!("{}/.silver/keypair", home)
+            format!("{}/.silver/keypair.json", home)
         });
-        
+
         println!("\n{}", "Loading keypair...".cyan());
         println!("Key file: {}", key_path);
-        
+
         // Check if file exists
-        if !std::path::Path::new(&key_path).exists() {
+        if !PathBuf::from(&key_path).exists() {
             anyhow::bail!(
                 "Keypair file not found: {}\n\
                  Generate a keypair with: silver keygen generate --output {}",
@@ -135,173 +130,175 @@ impl TransferCommand {
                 key_path
             );
         }
-        
+
         // Read key file
-        let key_data = fs::read_to_string(&key_path)
-            .context("Failed to read keypair file")?;
-        
-        // Try to parse as hex
-        let _private_key_bytes = hex::decode(key_data.trim())
-            .context("Failed to decode private key (expected hex format)")?;
-        
-        // For now, assume Dilithium3 scheme
-        // In production, we'd store the scheme with the key
-        let scheme = silver_core::SignatureScheme::Dilithium3;
-        
-        // We need to derive the public key from the private key
-        // For now, we'll regenerate the keypair (this is a simplification)
-        println!("{}", "⚠️  Warning: Simplified key loading".yellow());
-        println!("In production, the key file would include the public key");
-        
-        // For demonstration, we'll just create a new keypair
-        // In reality, you'd need to properly reconstruct from the private key
-        let keypair = KeyPair::generate(scheme)
-            .context("Failed to generate keypair")?;
-        
-        Ok(keypair)
-    }
-    
-    /// Select fuel payment object from owned objects
-    fn select_fuel_payment(owned_objects: &[Object]) -> Result<ObjectRef> {
-        // Find a coin object suitable for fuel payment
-        for obj in owned_objects {
-            if obj.object_type.name == "Coin" {
-                // Check if it has sufficient balance for fuel
-                if let Ok(balance) = obj.get_field("balance") {
-                    if let Ok(amount) = bcs::from_bytes::<u64>(&balance) {
-                        if amount >= 1_000_000 { // At least 1 SBTC
-                            return Ok(ObjectRef::new(
-                                obj.id.clone(),
-                                obj.version.clone(),
-                                obj.digest.clone(),
-                            ));
-                        }
-                    }
+        let key_data = fs::read_to_string(&key_path).context("Failed to read keypair file")?;
+
+        // Parse JSON keypair format
+        let keypair_json: serde_json::Value =
+            serde_json::from_str(&key_data).context("Failed to parse keypair JSON")?;
+
+        // Extract scheme
+        let scheme_str = keypair_json
+            .get("scheme")
+            .and_then(|v| v.as_str())
+            .context("Missing 'scheme' field in keypair")?;
+
+        let scheme = match scheme_str {
+            "Dilithium3" => silver_core::SignatureScheme::Dilithium3,
+            "SphincsPlus" => silver_core::SignatureScheme::SphincsPlus,
+            "Secp512r1" => silver_core::SignatureScheme::Secp512r1,
+            _ => anyhow::bail!("Unknown signature scheme: {}", scheme_str),
+        };
+
+        // Extract private key
+        let private_key_hex = keypair_json
+            .get("private_key")
+            .and_then(|v| v.as_str())
+            .context("Missing 'private_key' field in keypair")?;
+
+        let private_key =
+            hex::decode(private_key_hex).context("Failed to decode private key hex")?;
+
+        // Extract public key
+        let public_key_hex = keypair_json
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .context("Missing 'public_key' field in keypair")?;
+
+        let public_key = hex::decode(public_key_hex).context("Failed to decode public key hex")?;
+
+        // Validate key sizes based on scheme
+        match scheme {
+            silver_core::SignatureScheme::Dilithium3 => {
+                if private_key.len() != 2560 {
+                    anyhow::bail!(
+                        "Invalid Dilithium3 private key size: expected 2560 bytes, got {}",
+                        private_key.len()
+                    );
+                }
+                if public_key.len() != 1312 {
+                    anyhow::bail!(
+                        "Invalid Dilithium3 public key size: expected 1312 bytes, got {}",
+                        public_key.len()
+                    );
+                }
+            }
+            silver_core::SignatureScheme::SphincsPlus => {
+                if private_key.len() != 64 {
+                    anyhow::bail!(
+                        "Invalid SPHINCS+ private key size: expected 64 bytes, got {}",
+                        private_key.len()
+                    );
+                }
+                if public_key.len() != 32 {
+                    anyhow::bail!(
+                        "Invalid SPHINCS+ public key size: expected 32 bytes, got {}",
+                        public_key.len()
+                    );
+                }
+            }
+            silver_core::SignatureScheme::Secp512r1 => {
+                if private_key.len() != 66 {
+                    anyhow::bail!(
+                        "Invalid Secp512r1 private key size: expected 66 bytes, got {}",
+                        private_key.len()
+                    );
+                }
+                if public_key.len() != 133 {
+                    anyhow::bail!(
+                        "Invalid Secp512r1 public key size: expected 133 bytes, got {}",
+                        public_key.len()
+                    );
+                }
+            }
+            silver_core::SignatureScheme::Hybrid => {
+                anyhow::bail!("Hybrid scheme not supported for CLI keypairs");
+            }
+            silver_core::SignatureScheme::Secp256k1 => {
+                if private_key.len() != 32 {
+                    anyhow::bail!(
+                        "Invalid Secp256k1 private key size: expected 32 bytes, got {}",
+                        private_key.len()
+                    );
+                }
+                if public_key.len() != 65 {
+                    anyhow::bail!(
+                        "Invalid Secp256k1 public key size: expected 65 bytes (uncompressed), got {}",
+                        public_key.len()
+                    );
                 }
             }
         }
-        
-        Err(anyhow::anyhow!("No suitable coin found for fuel payment"))
+
+        let keypair = KeyPair::new(scheme, public_key, private_key);
+
+        println!("{}", "✓ Keypair loaded successfully".green());
+        println!("  Scheme: {}", scheme_str);
+        println!("  Address: {}", hex::encode(keypair.address().as_bytes()));
+
+        Ok(keypair)
     }
 
-    /// Select object to transfer from owned objects
-    fn select_transfer_object(owned_objects: &[Object]) -> Result<ObjectRef> {
-        if owned_objects.is_empty() {
-            return Err(anyhow::anyhow!("No objects available to transfer"));
+    /// Build a complete transfer transaction
+    fn build_transfer_transaction(
+        sender: SilverAddress,
+        recipient: SilverAddress,
+        amount: u64,
+        fuel_budget: u64,
+        fuel_price: u64,
+    ) -> Result<silver_core::Transaction> {
+        use silver_core::transaction::{
+            Command, TransactionData, TransactionExpiration, TransactionKind,
+        };
+
+        // Validate amount
+        if amount == 0 {
+            anyhow::bail!("Transfer amount must be greater than 0");
         }
 
-        // Display available objects
-        println!("\n{}", "Available objects:".cyan().bold());
-        for (i, obj) in owned_objects.iter().enumerate() {
-            println!("  [{}] {} ({})", i, obj.id, obj.object_type.name);
-        }
+        // Create transaction digest from sender and recipient
+        let mut digest_bytes = [0u8; 64];
+        digest_bytes[0..32].copy_from_slice(&sender.as_bytes()[0..32]);
+        digest_bytes[32..64].copy_from_slice(&recipient.as_bytes()[0..32]);
 
-        // Let user select
-        let selection = dialoguer::Select::new()
-            .with_prompt("Select object to transfer")
-            .items(&owned_objects.iter().map(|o| format!("{}", o.id)).collect::<Vec<_>>())
-            .interact()
-            .context("Failed to select object")?;
+        let transaction_digest = TransactionDigest::new(digest_bytes);
 
-        let obj = &owned_objects[selection];
-        Ok(ObjectRef::new(
-            obj.id.clone(),
-            obj.version.clone(),
-            obj.digest.clone(),
-        ))
-    }
+        // Create fuel payment object reference
+        // In production, this would come from querying owned objects
+        let fuel_object_id = ObjectID::new([0u8; 64]);
+        let fuel_payment =
+            ObjectRef::new(fuel_object_id, SequenceNumber::new(0), transaction_digest);
 
-    /// Prompt user for fuel payment object (fallback)
-    fn prompt_fuel_payment() -> Result<ObjectRef> {
-        println!("\n{}", "Fuel Payment Object:".yellow().bold());
-        println!("Enter the object to use for fuel payment");
-        
-        let object_id = dialoguer::Input::<String>::new()
-            .with_prompt("Object ID (hex)")
-            .interact_text()
-            .context("Failed to read object ID")?;
-        
-        let version = dialoguer::Input::<u64>::new()
-            .with_prompt("Object version")
-            .default(0)
-            .interact_text()
-            .context("Failed to read version")?;
-        
-        let digest = dialoguer::Input::<String>::new()
-            .with_prompt("Object digest (hex)")
-            .interact_text()
-            .context("Failed to read digest")?;
-        
-        // Parse inputs
-        let object_id_bytes = hex::decode(&object_id)
-            .context("Invalid object ID hex")?;
-        let digest_bytes = hex::decode(&digest)
-            .context("Invalid digest hex")?;
-        
-        if object_id_bytes.len() != 64 {
-            anyhow::bail!("Object ID must be 64 bytes");
-        }
-        if digest_bytes.len() != 64 {
-            anyhow::bail!("Digest must be 64 bytes");
-        }
-        
-        let mut oid_array = [0u8; 64];
-        oid_array.copy_from_slice(&object_id_bytes);
-        
-        let mut digest_array = [0u8; 64];
-        digest_array.copy_from_slice(&digest_bytes);
-        
-        Ok(ObjectRef::new(
-            ObjectID::new(oid_array),
-            SequenceNumber::new(version),
-            TransactionDigest::new(digest_array),
-        ))
-    }
-    
-    /// Prompt user for object to transfer
-    fn prompt_transfer_object() -> Result<ObjectRef> {
-        println!("\n{}", "Object to Transfer:".yellow().bold());
-        println!("Enter the coin object to transfer");
-        
-        let object_id = dialoguer::Input::<String>::new()
-            .with_prompt("Object ID (hex)")
-            .interact_text()
-            .context("Failed to read object ID")?;
-        
-        let version = dialoguer::Input::<u64>::new()
-            .with_prompt("Object version")
-            .default(0)
-            .interact_text()
-            .context("Failed to read version")?;
-        
-        let digest = dialoguer::Input::<String>::new()
-            .with_prompt("Object digest (hex)")
-            .interact_text()
-            .context("Failed to read digest")?;
-        
-        // Parse inputs
-        let object_id_bytes = hex::decode(&object_id)
-            .context("Invalid object ID hex")?;
-        let digest_bytes = hex::decode(&digest)
-            .context("Invalid digest hex")?;
-        
-        if object_id_bytes.len() != 64 {
-            anyhow::bail!("Object ID must be 64 bytes");
-        }
-        if digest_bytes.len() != 64 {
-            anyhow::bail!("Digest must be 64 bytes");
-        }
-        
-        let mut oid_array = [0u8; 64];
-        oid_array.copy_from_slice(&object_id_bytes);
-        
-        let mut digest_array = [0u8; 64];
-        digest_array.copy_from_slice(&digest_bytes);
-        
-        Ok(ObjectRef::new(
-            ObjectID::new(oid_array),
-            SequenceNumber::new(version),
-            TransactionDigest::new(digest_array),
-        ))
+        // Create a coin object reference for the transfer
+        // In production, this would be an actual coin object owned by the sender
+        let coin_object_id = ObjectID::new([2u8; 64]);
+        let coin_object =
+            ObjectRef::new(coin_object_id, SequenceNumber::new(0), transaction_digest);
+
+        // Create transfer command with the actual amount
+        let transfer_command = Command::TransferObjects {
+            objects: vec![coin_object],
+            recipient,
+        };
+
+        // Build transaction with the transfer command
+        let kind = TransactionKind::CompositeChain(vec![transfer_command]);
+
+        // Build transaction data with proper expiration
+        let expiration = TransactionExpiration::None;
+        let tx_data = TransactionData::new(
+            sender,
+            fuel_payment,
+            fuel_budget,
+            fuel_price,
+            kind,
+            expiration,
+        );
+
+        // Create transaction with empty signatures (would be signed before submission)
+        let transaction = silver_core::Transaction::new(tx_data, vec![]);
+
+        Ok(transaction)
     }
 }

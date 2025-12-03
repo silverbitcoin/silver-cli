@@ -9,7 +9,10 @@ use clap::{Parser, Subcommand};
 use silver_core::SignatureScheme;
 use std::path::PathBuf;
 
-use commands::{CallCommand, CodegenCommand, DevNetCommand, KeygenCommand, QueryCommand, SimulateCommand, TransferCommand};
+use commands::{
+    CallCommand, CodegenCommand, DevNetCommand, KeygenCommand, QueryCommand, SimulateCommand,
+    TransferCommand,
+};
 
 #[derive(Parser)]
 #[command(name = "silver")]
@@ -25,7 +28,7 @@ enum Commands {
     /// Key management commands
     #[command(subcommand)]
     Keygen(KeygenCommands),
-    
+
     /// Transfer tokens to an address
     Transfer {
         /// Recipient address (hex)
@@ -33,20 +36,20 @@ enum Commands {
         /// Amount to transfer (in MIST, 1 SBTC = 1,000,000,000 MIST)
         amount: u64,
         /// Sender address or key file (optional, uses default if not specified)
-        #[arg(short, long)]
+        #[arg(short = 's', long)]
         from: Option<String>,
         /// Fuel budget for transaction
-        #[arg(short, long)]
+        #[arg(short = 'b', long)]
         fuel_budget: Option<u64>,
         /// RPC endpoint URL
-        #[arg(short, long, default_value = "http://localhost:9545")]
+        #[arg(short = 'r', long, default_value = "http://localhost:9545")]
         rpc_url: String,
     },
-    
+
     /// Query blockchain data
     #[command(subcommand)]
     Query(QueryCommands),
-    
+
     /// Call a Quantum smart contract function
     Call {
         /// Package ID
@@ -68,11 +71,11 @@ enum Commands {
         #[arg(short, long, default_value = "http://localhost:9545")]
         rpc_url: String,
     },
-    
+
     /// Development network commands
     #[command(subcommand)]
     DevNet(DevNetCommands),
-    
+
     /// Generate Rust bindings from Quantum modules
     Codegen {
         /// Path to Quantum source file
@@ -85,7 +88,7 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    
+
     /// Simulate transaction execution without submitting to network
     Simulate {
         /// Transaction type: transfer, call
@@ -120,7 +123,7 @@ enum KeygenCommands {
         #[arg(short, long)]
         encrypt: bool,
     },
-    
+
     /// Generate a mnemonic phrase
     Mnemonic {
         /// Number of words (12, 15, 18, 21, 24)
@@ -130,7 +133,7 @@ enum KeygenCommands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    
+
     /// Derive keypair from mnemonic phrase
     FromMnemonic {
         /// Mnemonic phrase (if not provided, will prompt)
@@ -146,7 +149,7 @@ enum KeygenCommands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    
+
     /// Import a keypair from file
     Import {
         /// Input file path
@@ -161,7 +164,7 @@ enum KeygenCommands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    
+
     /// Export a keypair to different format
     Export {
         /// Input file path
@@ -175,7 +178,7 @@ enum KeygenCommands {
         #[arg(short, long)]
         encrypt: bool,
     },
-    
+
     /// Show address from public key
     Address {
         /// Public key (hex)
@@ -193,7 +196,7 @@ enum QueryCommands {
         #[arg(short, long, default_value = "http://localhost:9545")]
         rpc_url: String,
     },
-    
+
     /// Query transaction status
     Transaction {
         /// Transaction digest (hex)
@@ -202,7 +205,7 @@ enum QueryCommands {
         #[arg(short, long, default_value = "http://localhost:9545")]
         rpc_url: String,
     },
-    
+
     /// Query objects owned by an address
     Objects {
         /// Owner address (hex)
@@ -224,10 +227,10 @@ enum DevNetCommands {
         #[arg(short, long)]
         data_dir: Option<String>,
     },
-    
+
     /// Stop local development network
     Stop,
-    
+
     /// Request test tokens from faucet
     Faucet {
         /// Recipient address (hex)
@@ -238,7 +241,8 @@ enum DevNetCommands {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -251,15 +255,29 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Keygen(cmd) => handle_keygen(cmd),
-        Commands::Transfer { to, amount, from, fuel_budget, rpc_url: _ } => {
-            TransferCommand::transfer(&to, amount, from, fuel_budget)
-        }
+        Commands::Transfer {
+            to,
+            amount,
+            from,
+            fuel_budget,
+            rpc_url,
+        } => TransferCommand::transfer(&to, amount, from, fuel_budget, &rpc_url),
         Commands::Query(cmd) => handle_query(cmd),
-        Commands::Call { package, module, function, args, type_args, fuel_budget, rpc_url: _ } => {
-            CallCommand::call(&package, &module, &function, args, type_args, fuel_budget)
-        }
+        Commands::Call {
+            package,
+            module,
+            function,
+            args,
+            type_args,
+            fuel_budget,
+            rpc_url: _,
+        } => CallCommand::call(&package, &module, &function, args, type_args, fuel_budget).await,
         Commands::DevNet(cmd) => handle_devnet(cmd),
-        Commands::Codegen { source, bytecode, output } => {
+        Commands::Codegen {
+            source,
+            bytecode,
+            output,
+        } => {
             let cmd = CodegenCommand {
                 source,
                 bytecode,
@@ -268,34 +286,51 @@ fn main() -> Result<()> {
             };
             cmd.execute()
         }
-        Commands::Simulate { tx_type, params, sender, rpc_url } => {
-            SimulateCommand::simulate(&tx_type, &params, sender, &rpc_url)
-        }
+        Commands::Simulate {
+            tx_type,
+            params,
+            sender,
+            rpc_url,
+        } => SimulateCommand::simulate(&tx_type, &params, sender, &rpc_url),
     }
 }
 
 fn handle_keygen(cmd: KeygenCommands) -> Result<()> {
     match cmd {
-        KeygenCommands::Generate { format, scheme, output, encrypt } => {
+        KeygenCommands::Generate {
+            format,
+            scheme,
+            output,
+            encrypt,
+        } => {
             let sig_scheme = parse_signature_scheme(scheme)?;
             KeygenCommand::generate(&format, sig_scheme, output, encrypt)
         }
         KeygenCommands::Mnemonic { words, output } => {
             KeygenCommand::generate_mnemonic(words, output)
         }
-        KeygenCommands::FromMnemonic { phrase, scheme, path, output } => {
+        KeygenCommands::FromMnemonic {
+            phrase,
+            scheme,
+            path,
+            output,
+        } => {
             let sig_scheme = parse_signature_scheme(scheme)?;
             KeygenCommand::from_mnemonic(phrase, sig_scheme, path, output)
         }
-        KeygenCommands::Import { input, format, encrypted, output } => {
-            KeygenCommand::import(input, &format, encrypted, output)
-        }
-        KeygenCommands::Export { input, format, output, encrypt } => {
-            KeygenCommand::export(input, &format, output, encrypt)
-        }
-        KeygenCommands::Address { public_key } => {
-            KeygenCommand::show_address(&public_key)
-        }
+        KeygenCommands::Import {
+            input,
+            format,
+            encrypted,
+            output,
+        } => KeygenCommand::import(input, &format, encrypted, output),
+        KeygenCommands::Export {
+            input,
+            format,
+            output,
+            encrypt,
+        } => KeygenCommand::export(input, &format, output, encrypt),
+        KeygenCommands::Address { public_key } => KeygenCommand::show_address(&public_key),
     }
 }
 
@@ -315,15 +350,12 @@ fn handle_query(cmd: QueryCommands) -> Result<()> {
 
 fn handle_devnet(cmd: DevNetCommands) -> Result<()> {
     match cmd {
-        DevNetCommands::Start { validators, data_dir } => {
-            DevNetCommand::start(validators, data_dir)
-        }
-        DevNetCommands::Stop => {
-            DevNetCommand::stop()
-        }
-        DevNetCommands::Faucet { address, amount } => {
-            DevNetCommand::faucet(&address, amount)
-        }
+        DevNetCommands::Start {
+            validators,
+            data_dir,
+        } => DevNetCommand::start(validators, data_dir),
+        DevNetCommands::Stop => DevNetCommand::stop(),
+        DevNetCommands::Faucet { address, amount } => DevNetCommand::faucet(&address, amount),
     }
 }
 

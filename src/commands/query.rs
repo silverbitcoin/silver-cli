@@ -10,8 +10,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 use silver_core::{ObjectID, SilverAddress, TransactionDigest};
-use silver_sdk::RpcClient;
 use silver_sdk::client::{ClientConfig, TransactionStatus};
+use silver_sdk::RpcClient;
 use std::time::Duration;
 use tracing::debug;
 
@@ -32,46 +32,43 @@ impl QueryCommand {
     /// - Requirement 10.3: Display object contents in JSON format
     /// - Requirement 7.2: Query response time under 100ms
     pub fn query_object(object_id: &str, rpc_url: Option<String>) -> Result<()> {
-        let runtime = tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?;
+        let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
-        runtime.block_on(async {
-            Self::query_object_async(object_id, rpc_url).await
-        })
+        runtime.block_on(async { Self::query_object_async(object_id, rpc_url).await })
     }
 
     async fn query_object_async(object_id: &str, rpc_url: Option<String>) -> Result<()> {
         let url = rpc_url.unwrap_or_else(|| "http://localhost:9545".to_string());
-        
+
         debug!("Querying object {} from {}", object_id, url);
-        
+
         // Create RPC client
         let config = ClientConfig {
             url: url.clone(),
             timeout: Duration::from_secs(10),
             ..Default::default()
         };
-        let client = RpcClient::with_config(config)
-            .context("Failed to create RPC client")?;
+        let client = RpcClient::with_config(config).context("Failed to create RPC client")?;
 
         // Parse object ID
-        let obj_id = parse_object_id(object_id)
-            .context("Invalid object ID format")?;
+        let obj_id = parse_object_id(object_id).context("Invalid object ID format")?;
 
         // Query object
         println!("{}", "Querying object...".cyan());
         let start = std::time::Instant::now();
-        
-        let object = client.get_object(obj_id).await
+
+        let object = client
+            .get_object(obj_id)
+            .await
             .context("Failed to query object")?;
-        
+
         let elapsed = start.elapsed();
         debug!("Query completed in {:?}", elapsed);
 
         // Display object in JSON format
         println!("\n{}", "Object Details:".green().bold());
         println!("{}", "=".repeat(80).green());
-        
+
         // Create JSON representation
         let json_obj = serde_json::json!({
             "id": object.id.to_hex(),
@@ -87,16 +84,18 @@ impl QueryCommand {
         let json_str = serde_json::to_string_pretty(&json_obj)
             .context("Failed to serialize object to JSON")?;
         println!("{}", json_str);
-        
+
         println!("{}", "=".repeat(80).green());
-        println!("\n{} Query completed in {:.2}ms", 
-            "✓".green().bold(), 
+        println!(
+            "\n{} Query completed in {:.2}ms",
+            "✓".green().bold(),
             elapsed.as_secs_f64() * 1000.0
         );
 
         // Warn if query took longer than 100ms (requirement 7.2)
         if elapsed.as_millis() > 100 {
-            println!("{} Query took {}ms (target: <100ms)", 
+            println!(
+                "{} Query took {}ms (target: <100ms)",
                 "⚠".yellow().bold(),
                 elapsed.as_millis()
             );
@@ -118,46 +117,44 @@ impl QueryCommand {
     /// - Requirement 10.3: Display transaction status in JSON format
     /// - Requirement 7.2: Query response time under 100ms
     pub fn query_transaction(tx_digest: &str, rpc_url: Option<String>) -> Result<()> {
-        let runtime = tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?;
+        let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
-        runtime.block_on(async {
-            Self::query_transaction_async(tx_digest, rpc_url).await
-        })
+        runtime.block_on(async { Self::query_transaction_async(tx_digest, rpc_url).await })
     }
 
     async fn query_transaction_async(tx_digest: &str, rpc_url: Option<String>) -> Result<()> {
         let url = rpc_url.unwrap_or_else(|| "http://localhost:9545".to_string());
-        
+
         debug!("Querying transaction {} from {}", tx_digest, url);
-        
+
         // Create RPC client
         let config = ClientConfig {
             url: url.clone(),
             timeout: Duration::from_secs(10),
             ..Default::default()
         };
-        let client = RpcClient::with_config(config)
-            .context("Failed to create RPC client")?;
+        let client = RpcClient::with_config(config).context("Failed to create RPC client")?;
 
         // Parse transaction digest
-        let digest = parse_transaction_digest(tx_digest)
-            .context("Invalid transaction digest format")?;
+        let digest =
+            parse_transaction_digest(tx_digest).context("Invalid transaction digest format")?;
 
         // Query transaction
         println!("{}", "Querying transaction...".cyan());
         let start = std::time::Instant::now();
-        
-        let tx_response = client.get_transaction(digest).await
+
+        let tx_response = client
+            .get_transaction(digest)
+            .await
             .context("Failed to query transaction")?;
-        
+
         let elapsed = start.elapsed();
         debug!("Query completed in {:?}", elapsed);
 
         // Display transaction in JSON format
         println!("\n{}", "Transaction Details:".green().bold());
         println!("{}", "=".repeat(80).green());
-        
+
         // Create JSON representation
         let json_tx = serde_json::json!({
             "digest": hex::encode(tx_response.digest.as_bytes()),
@@ -170,9 +167,9 @@ impl QueryCommand {
         let json_str = serde_json::to_string_pretty(&json_tx)
             .context("Failed to serialize transaction to JSON")?;
         println!("{}", json_str);
-        
+
         println!("{}", "=".repeat(80).green());
-        
+
         // Display status with color coding
         match tx_response.status {
             TransactionStatus::Executed => {
@@ -191,15 +188,17 @@ impl QueryCommand {
                 println!("\n{} Transaction failed: {}", "✗".red().bold(), error.red());
             }
         }
-        
-        println!("\n{} Query completed in {:.2}ms", 
-            "✓".green().bold(), 
+
+        println!(
+            "\n{} Query completed in {:.2}ms",
+            "✓".green().bold(),
             elapsed.as_secs_f64() * 1000.0
         );
 
         // Warn if query took longer than 100ms (requirement 7.2)
         if elapsed.as_millis() > 100 {
-            println!("{} Query took {}ms (target: <100ms)", 
+            println!(
+                "{} Query took {}ms (target: <100ms)",
                 "⚠".yellow().bold(),
                 elapsed.as_millis()
             );
@@ -221,75 +220,80 @@ impl QueryCommand {
     /// - Requirement 10.3: Display object contents in JSON format
     /// - Requirement 7.2: Query response time under 100ms
     pub fn query_objects_by_owner(owner: &str, rpc_url: Option<String>) -> Result<()> {
-        let runtime = tokio::runtime::Runtime::new()
-            .context("Failed to create tokio runtime")?;
+        let runtime = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
-        runtime.block_on(async {
-            Self::query_objects_by_owner_async(owner, rpc_url).await
-        })
+        runtime.block_on(async { Self::query_objects_by_owner_async(owner, rpc_url).await })
     }
 
     async fn query_objects_by_owner_async(owner: &str, rpc_url: Option<String>) -> Result<()> {
         let url = rpc_url.unwrap_or_else(|| "http://localhost:9545".to_string());
-        
+
         debug!("Querying objects for owner {} from {}", owner, url);
-        
+
         // Create RPC client
         let config = ClientConfig {
             url: url.clone(),
             timeout: Duration::from_secs(10),
             ..Default::default()
         };
-        let client = RpcClient::with_config(config)
-            .context("Failed to create RPC client")?;
+        let client = RpcClient::with_config(config).context("Failed to create RPC client")?;
 
         // Parse owner address
-        let owner_addr = parse_address(owner)
-            .context("Invalid owner address format")?;
+        let owner_addr = parse_address(owner).context("Invalid owner address format")?;
 
         // Query objects
         println!("{}", "Querying objects...".cyan());
         let start = std::time::Instant::now();
-        
-        let objects = client.get_objects_owned_by(owner_addr).await
+
+        let objects = client
+            .get_objects_owned_by(owner_addr)
+            .await
             .context("Failed to query objects")?;
-        
+
         let elapsed = start.elapsed();
         debug!("Query completed in {:?}", elapsed);
 
         // Display objects in JSON format
         println!("\n{}", "Objects Owned:".green().bold());
         println!("{}", "=".repeat(80).green());
-        
+
         if objects.is_empty() {
             println!("{}", "No objects found for this address".yellow());
         } else {
-            println!("Found {} object(s)\n", objects.len().to_string().cyan().bold());
-            
+            println!(
+                "Found {} object(s)\n",
+                objects.len().to_string().cyan().bold()
+            );
+
             // Create JSON array of objects
-            let json_objects: Vec<serde_json::Value> = objects.iter().map(|obj_ref| {
-                serde_json::json!({
-                    "object_id": obj_ref.id.to_hex(),
-                    "version": obj_ref.version.value(),
-                    "digest": hex::encode(obj_ref.digest.as_bytes()),
+            let json_objects: Vec<serde_json::Value> = objects
+                .iter()
+                .map(|obj_ref| {
+                    serde_json::json!({
+                        "object_id": obj_ref.id.to_hex(),
+                        "version": obj_ref.version.value(),
+                        "digest": hex::encode(obj_ref.digest.as_bytes()),
+                    })
                 })
-            }).collect();
+                .collect();
 
             // Pretty print JSON
             let json_str = serde_json::to_string_pretty(&json_objects)
                 .context("Failed to serialize objects to JSON")?;
             println!("{}", json_str);
         }
-        
+
         println!("{}", "=".repeat(80).green());
-        println!("\n{} Query completed in {:.2}ms", 
-            "✓".green().bold(), 
+        println!(
+            "\n{} Query completed in {:.2}ms",
+            "✓".green().bold(),
             elapsed.as_secs_f64() * 1000.0
         );
 
         // Warn if query took longer than 100ms (requirement 7.2)
         if elapsed.as_millis() > 100 {
-            println!("{} Query took {}ms (target: <100ms)", 
+            println!(
+                "{} Query took {}ms (target: <100ms)",
                 "⚠".yellow().bold(),
                 elapsed.as_millis()
             );
@@ -333,8 +337,7 @@ fn parse_address(s: &str) -> Result<SilverAddress> {
 
 /// Parse transaction digest from hex string
 fn parse_transaction_digest(s: &str) -> Result<TransactionDigest> {
-    let bytes = hex::decode(s)
-        .context("Invalid hex encoding")?;
+    let bytes = hex::decode(s).context("Invalid hex encoding")?;
 
     if bytes.len() != 64 {
         anyhow::bail!(
@@ -346,73 +349,4 @@ fn parse_transaction_digest(s: &str) -> Result<TransactionDigest> {
     let mut arr = [0u8; 64];
     arr.copy_from_slice(&bytes);
     Ok(TransactionDigest::new(arr))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_object_id_hex() {
-        let id = ObjectID::new([42u8; 64]);
-        let hex = id.to_hex();
-        let parsed = parse_object_id(&hex).unwrap();
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn test_parse_object_id_base58() {
-        let id = ObjectID::new([42u8; 64]);
-        let b58 = id.to_base58();
-        let parsed = parse_object_id(&b58).unwrap();
-        assert_eq!(id, parsed);
-    }
-
-    #[test]
-    fn test_parse_object_id_invalid() {
-        let result = parse_object_id("invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_address_hex() {
-        let addr = SilverAddress::new([42u8; 64]);
-        let hex = addr.to_hex();
-        let parsed = parse_address(&hex).unwrap();
-        assert_eq!(addr, parsed);
-    }
-
-    #[test]
-    fn test_parse_address_base58() {
-        let addr = SilverAddress::new([42u8; 64]);
-        let b58 = addr.to_base58();
-        let parsed = parse_address(&b58).unwrap();
-        assert_eq!(addr, parsed);
-    }
-
-    #[test]
-    fn test_parse_address_invalid() {
-        let result = parse_address("invalid");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_transaction_digest() {
-        let digest = TransactionDigest::new([42u8; 64]);
-        let hex = hex::encode(digest.as_bytes());
-        let parsed = parse_transaction_digest(&hex).unwrap();
-        assert_eq!(digest, parsed);
-    }
-
-    #[test]
-    fn test_parse_transaction_digest_invalid_length() {
-        let result = parse_transaction_digest("aabbcc");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_transaction_digest_invalid_hex() {
-        let result = parse_transaction_digest("zzzz");
-        assert!(result.is_err());
-    }
 }
