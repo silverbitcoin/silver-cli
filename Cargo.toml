@@ -42,6 +42,11 @@ base64 = { workspace = true }
 bincode = { workspace = true }
 bcs = { workspace = true }
 
+# Cryptography
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+blake3 = { workspace = true }
+
 # Configuration
 toml = { workspace = true }
 

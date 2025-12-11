@@ -16,11 +16,32 @@ impl KeygenCommand {
     /// Generate a new keypair
     pub fn generate(
         format: &str,
-        scheme: Option<SignatureScheme>,
+        scheme_str: Option<String>,
         output: Option<PathBuf>,
         encrypt: bool,
     ) -> Result<()> {
-        let scheme = scheme.unwrap_or(SignatureScheme::Dilithium3);
+        // Parse signature scheme from string
+        let scheme = if let Some(scheme_name) = scheme_str {
+            match scheme_name.to_lowercase().as_str() {
+                "dilithium3" | "dilithium" => SignatureScheme::Dilithium3,
+                "sphincs-plus" | "sphincs" => SignatureScheme::SphincsPlus,
+                "secp256k1" | "secp256" => SignatureScheme::Secp256k1,
+                "secp512r1" | "secp512" => SignatureScheme::Secp512r1,
+                "hybrid" => SignatureScheme::Hybrid,
+                _ => {
+                    eprintln!("❌ Unknown signature scheme: {}", scheme_name);
+                    eprintln!("\nAvailable schemes:");
+                    eprintln!("  • dilithium3 (default) - Lattice-based post-quantum");
+                    eprintln!("  • sphincs-plus - Hash-based post-quantum");
+                    eprintln!("  • secp256k1 - ECDSA (Bitcoin/Ethereum compatible)");
+                    eprintln!("  • secp512r1 - ECDSA (512-bit)");
+                    eprintln!("  • hybrid - Hybrid post-quantum + classical");
+                    return Err(anyhow::anyhow!("Invalid signature scheme: {}", scheme_name));
+                }
+            }
+        } else {
+            SignatureScheme::Dilithium3
+        };
 
         println!("{}", "🔑 Generating new keypair...".cyan().bold());
         println!("Signature scheme: {:?}", scheme);
@@ -44,8 +65,20 @@ impl KeygenCommand {
                 .interact()
                 .context("Failed to read password")?;
 
+            // Create JSON structure with all keypair data
+            let keypair_json = serde_json::json!({
+                "scheme": format!("{:?}", scheme),
+                "address": hex::encode(address.as_bytes()),
+                "public_key": hex::encode(&keypair.public_key_struct().bytes),
+                "private_key": hex::encode(keypair.private_key()),
+                "encrypted": true,
+                "encryption_method": "argon2id",
+            });
+
+            // Encrypt the JSON string
+            let json_str = serde_json::to_string(&keypair_json)?;
             let encrypted = KeyEncryption::encrypt_classical(
-                keypair.private_key(),
+                json_str.as_bytes(),
                 &password,
                 Argon2Params::production(),
             )
@@ -60,16 +93,34 @@ impl KeygenCommand {
                 _ => encrypted.to_json()?,
             }
         } else {
-            match format {
-                "hex" => hex::encode(keypair.private_key()),
-                "base64" => base64::engine::general_purpose::STANDARD.encode(keypair.private_key()),
-                "json" => serde_json::to_string_pretty(&serde_json::json!({
-                    "scheme": format!("{:?}", scheme),
-                    "private_key": hex::encode(keypair.private_key()),
-                    "public_key": hex::encode(&keypair.public_key_struct().bytes),
-                    "address": hex::encode(address.as_bytes()),
-                }))?,
-                _ => hex::encode(keypair.private_key()),
+            // Save as plain JSON (NOT encrypted)
+            let scheme_name = match scheme {
+                SignatureScheme::Dilithium3 => "Dilithium3",
+                SignatureScheme::SphincsPlus => "SphincsPlus",
+                SignatureScheme::Secp256k1 => "Secp256k1",
+                SignatureScheme::Secp512r1 => "Secp512r1",
+                SignatureScheme::Hybrid => "Hybrid",
+            };
+
+            let keypair_json = serde_json::json!({
+                "scheme": scheme_name,
+                "address": hex::encode(address.as_bytes()),
+                "public_key": hex::encode(&keypair.public_key_struct().bytes),
+                "private_key": hex::encode(keypair.private_key()),
+                "encrypted": false,
+            });
+
+            // When saving to file, always use JSON format for compatibility with transfer command
+            if output.is_some() {
+                serde_json::to_string_pretty(&keypair_json)?
+            } else {
+                // When printing to stdout, respect the format parameter
+                match format {
+                    "hex" => hex::encode(keypair.private_key()),
+                    "base64" => base64::engine::general_purpose::STANDARD.encode(keypair.private_key()),
+                    "json" => serde_json::to_string_pretty(&keypair_json)?,
+                    _ => serde_json::to_string_pretty(&keypair_json)?,
+                }
             }
         };
 
@@ -79,6 +130,16 @@ impl KeygenCommand {
         // Save to file if output path specified
         if let Some(output_path) = output {
             fs::write(&output_path, &private_key_data).context("Failed to write key to file")?;
+            
+            // Set restrictive permissions on Unix systems
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                fs::set_permissions(&output_path, perms)
+                    .context("Failed to set file permissions")?;
+            }
+            
             println!(
                 "\n{}",
                 format!("✓ Private key saved to: {}", output_path.display()).green()
@@ -98,6 +159,10 @@ impl KeygenCommand {
 
         println!(
             "\n{}",
+            "💡 Tip: Use --scheme <name> to choose signature scheme".cyan()
+        );
+        println!(
+            "{}",
             "💡 Tip: Use --encrypt to password-protect your key".cyan()
         );
         println!("{}", "💡 Tip: Use --output <file> to save to a file".cyan());
@@ -164,11 +229,32 @@ impl KeygenCommand {
     /// Derive keypair from mnemonic
     pub fn from_mnemonic(
         mnemonic_phrase: Option<String>,
-        scheme: Option<SignatureScheme>,
+        scheme_str: Option<String>,
         derivation_path: Option<String>,
         output: Option<PathBuf>,
     ) -> Result<()> {
-        let scheme = scheme.unwrap_or(SignatureScheme::Dilithium3);
+        // Parse signature scheme from string
+        let scheme = if let Some(scheme_name) = scheme_str {
+            match scheme_name.to_lowercase().as_str() {
+                "dilithium3" | "dilithium" => SignatureScheme::Dilithium3,
+                "sphincs-plus" | "sphincs" => SignatureScheme::SphincsPlus,
+                "secp256k1" | "secp256" => SignatureScheme::Secp256k1,
+                "secp512r1" | "secp512" => SignatureScheme::Secp512r1,
+                "hybrid" => SignatureScheme::Hybrid,
+                _ => {
+                    eprintln!("❌ Unknown signature scheme: {}", scheme_name);
+                    eprintln!("\nAvailable schemes:");
+                    eprintln!("  • dilithium3 (default) - Lattice-based post-quantum");
+                    eprintln!("  • sphincs-plus - Hash-based post-quantum");
+                    eprintln!("  • secp256k1 - ECDSA (Bitcoin/Ethereum compatible)");
+                    eprintln!("  • secp512r1 - ECDSA (512-bit)");
+                    eprintln!("  • hybrid - Hybrid post-quantum + classical");
+                    return Err(anyhow::anyhow!("Invalid signature scheme: {}", scheme_name));
+                }
+            }
+        } else {
+            SignatureScheme::Dilithium3
+        };
 
         // Get mnemonic phrase
         let phrase = if let Some(p) = mnemonic_phrase {
@@ -211,9 +297,17 @@ impl KeygenCommand {
         if let Some(output_path) = output {
             let encrypt = dialoguer::Confirm::new()
                 .with_prompt("Encrypt private key before saving?")
-                .default(true)
+                .default(false)
                 .interact()
                 .context("Failed to read confirmation")?;
+
+            let scheme_name = match scheme {
+                SignatureScheme::Dilithium3 => "Dilithium3",
+                SignatureScheme::SphincsPlus => "SphincsPlus",
+                SignatureScheme::Secp256k1 => "Secp256k1",
+                SignatureScheme::Secp512r1 => "Secp512r1",
+                SignatureScheme::Hybrid => "Hybrid",
+            };
 
             let private_key_data = if encrypt {
                 let password = dialoguer::Password::new()
@@ -222,8 +316,21 @@ impl KeygenCommand {
                     .interact()
                     .context("Failed to read password")?;
 
+                // Create JSON structure with all keypair data
+                let keypair_json = serde_json::json!({
+                    "scheme": scheme_name,
+                    "address": hex::encode(address.as_bytes()),
+                    "public_key": hex::encode(&keypair.public_key_struct().bytes),
+                    "private_key": hex::encode(keypair.private_key()),
+                    "derivation_path": path,
+                    "encrypted": true,
+                    "encryption_method": "argon2id",
+                });
+
+                // Encrypt the JSON string
+                let json_str = serde_json::to_string(&keypair_json)?;
                 let encrypted = KeyEncryption::encrypt_classical(
-                    keypair.private_key(),
+                    json_str.as_bytes(),
                     &password,
                     Argon2Params::production(),
                 )
@@ -231,10 +338,30 @@ impl KeygenCommand {
 
                 encrypted.to_json()?
             } else {
-                hex::encode(keypair.private_key())
+                // Save as plain JSON (NOT encrypted)
+                let keypair_json = serde_json::json!({
+                    "scheme": scheme_name,
+                    "address": hex::encode(address.as_bytes()),
+                    "public_key": hex::encode(&keypair.public_key_struct().bytes),
+                    "private_key": hex::encode(keypair.private_key()),
+                    "derivation_path": path,
+                    "encrypted": false,
+                });
+
+                serde_json::to_string_pretty(&keypair_json)?
             };
 
             fs::write(&output_path, &private_key_data).context("Failed to write key to file")?;
+            
+            // Set restrictive permissions on Unix systems
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                fs::set_permissions(&output_path, perms)
+                    .context("Failed to set file permissions")?;
+            }
+            
             println!(
                 "\n{}",
                 format!("✓ Private key saved to: {}", output_path.display()).green()
@@ -290,11 +417,25 @@ impl KeygenCommand {
             }
         };
 
-        // Try to determine the scheme (for now, default to Dilithium3)
-        let scheme = SignatureScheme::Dilithium3;
+        // Determine the scheme based on private key length
+        let scheme = match private_key_bytes.len() {
+            32 => SignatureScheme::Secp256k1,
+            64 => SignatureScheme::Secp512r1,
+            1952 => SignatureScheme::Dilithium3,
+            2592 => SignatureScheme::SphincsPlus,
+            _ => {
+                eprintln!("Warning: Unknown private key length ({}), defaulting to Dilithium3", private_key_bytes.len());
+                SignatureScheme::Dilithium3
+            }
+        };
+        
+        // Derive public key from private key
+        let public_key_bytes = silver_crypto::derive_public_key(scheme, &private_key_bytes)
+            .context("Failed to derive public key from private key")?;
+        
         let keypair = KeyPair::new(
             scheme,
-            vec![], // We'd need to derive public key from private key
+            public_key_bytes,
             private_key_bytes,
         );
 

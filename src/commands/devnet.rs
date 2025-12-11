@@ -6,7 +6,7 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
-use silver_core::{SignatureScheme, SilverAddress, ObjectRef};
+use silver_core::{SignatureScheme, SilverAddress};
 use silver_crypto::KeyPair;
 use silver_sdk::SilverClient;
 use std::fs;
@@ -441,33 +441,87 @@ log_path = "{}/logs/node.log"
         amount: u64,
     ) -> Result<()> {
         // Connect to the node
-        let _client = SilverClient::new(DEVNET_RPC_URL).await?;
+        let client = SilverClient::new(DEVNET_RPC_URL).await?;
 
         // Get faucet's fuel object
         let faucet_address = faucet_keypair.address();
 
+        // Query faucet's coin objects to find available balance
+        let faucet_object_refs = client
+            .get_objects_owned_by(faucet_address)
+            .await
+            .context("Failed to query faucet objects")?;
+        
+        // Find coin objects with sufficient balance
+        let mut coin_objects = Vec::new();
+        let mut total_available = 0u64;
+
+        for obj_ref in faucet_object_refs {
+            if let Ok(obj) = client.get_object(obj_ref.id).await {
+                if matches!(obj.object_type, silver_core::ObjectType::Coin) {
+                    // Extract coin amount from object data
+                    if obj.data.len() >= 8 {
+                        let coin_amount = u64::from_le_bytes([
+                            obj.data[0], obj.data[1], obj.data[2], obj.data[3],
+                            obj.data[4], obj.data[5], obj.data[6], obj.data[7],
+                        ]);
+                        
+                        total_available = total_available.saturating_add(coin_amount);
+                        coin_objects.push((obj_ref, coin_amount));
+                        
+                        // Stop collecting once we have enough
+                        if total_available >= amount {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_available < amount {
+            bail!(
+                "Insufficient faucet balance: {} MIST available, {} MIST requested",
+                total_available,
+                amount
+            );
+        }
+
+        // Select coins to transfer (greedy approach: use largest coins first)
+        coin_objects.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        let mut selected_coins = Vec::new();
+        let mut selected_amount = 0u64;
+
+        for (coin_ref, coin_amount) in coin_objects {
+            selected_coins.push(coin_ref);
+            selected_amount = selected_amount.saturating_add(coin_amount);
+            
+            if selected_amount >= amount {
+                break;
+            }
+        }
+
+        if selected_coins.is_empty() {
+            bail!("No suitable coin objects found for transfer");
+        }
+
+        // Get the first selected coin as the gas object
+        let gas_object = selected_coins[0];
+
         // Create a transfer transaction from faucet to recipient
-        use silver_core::{Transaction, TransactionData, TransactionKind, Command, TransactionExpiration, ObjectID, SequenceNumber, TransactionDigest};
+        use silver_core::{Transaction, TransactionData, TransactionKind, Command, TransactionExpiration};
         use silver_core::MIN_FUEL_PRICE_MIST;
         
-        // Create a placeholder fuel object reference
-        // In production, this would be queried from the blockchain
-        let fuel_object = ObjectRef::new(
-            ObjectID::new([0u8; 64]),
-            SequenceNumber::new(0),
-            TransactionDigest::new([0u8; 64]),
-        );
-        
-        // Create a simple transfer command
+        // Create the transfer command with selected coins
         let transfer_command = Command::TransferObjects {
-            objects: vec![], // Would be populated with actual coin objects
+            objects: selected_coins.clone(),
             recipient,
         };
         
         let tx_data = TransactionData::new(
             faucet_address,
-            fuel_object,
-            100_000, // fuel budget
+            gas_object,
+            200_000, // fuel budget for transfer
             MIN_FUEL_PRICE_MIST,
             TransactionKind::CompositeChain(vec![transfer_command]),
             TransactionExpiration::None,
@@ -482,9 +536,9 @@ log_path = "{}/logs/node.log"
 
         // Send transaction to the local node via RPC
         let rpc_url = format!("{}/rpc", DEVNET_RPC_URL);
-        let client = reqwest::Client::new();
+        let http_client = reqwest::Client::new();
         
-        let response = client
+        let response = http_client
             .post(&rpc_url)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -506,7 +560,7 @@ log_path = "{}/logs/node.log"
             println!(
                 "  ✓ Faucet transfer sent {} MIST to {} (tx: {})",
                 amount,
-                hex::encode(&recipient.0),
+                recipient.to_hex(),
                 tx_digest
             );
         } else {

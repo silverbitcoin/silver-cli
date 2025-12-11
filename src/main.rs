@@ -3,10 +3,10 @@
 //! Command-line interface for interacting with the SilverBitcoin blockchain.
 
 mod commands;
+mod deployer;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use silver_core::SignatureScheme;
 use std::path::PathBuf;
 
 use commands::{
@@ -30,15 +30,25 @@ enum Commands {
     Keygen(KeygenCommands),
 
     /// Transfer tokens to an address
+    /// 
+    /// Sender determination:
+    /// - Default: Uses keypair from ~/.silver/keypair.json
+    /// - Custom: Use --from <path> to specify different keypair file
+    /// 
+    /// Amount is in SBTC (automatically converted to MIST)
+    /// Example: silver transfer <recipient> 1 (sends 1 SBTC)
     Transfer {
-        /// Recipient address (hex)
+        /// Recipient address (64-byte hex)
         to: String,
-        /// Amount to transfer (in MIST, 1 SBTC = 1,000,000,000 MIST)
+        /// Amount to transfer in SBTC (automatically converted to MIST)
+        /// Example: 1 = 1 SBTC = 1,000,000,000 MIST
         amount: u64,
-        /// Sender address or key file (optional, uses default if not specified)
-        #[arg(short = 's', long)]
+        /// Path to sender's keypair file (optional)
+        /// Default: ~/.silver/keypair.json
+        /// The sender address is derived from this keypair
+        #[arg(short = 'f', long, value_name = "PATH")]
         from: Option<String>,
-        /// Fuel budget for transaction
+        /// Fuel budget for transaction (optional)
         #[arg(short = 'b', long)]
         fuel_budget: Option<u64>,
         /// RPC endpoint URL
@@ -103,6 +113,43 @@ enum Commands {
         /// RPC endpoint URL
         #[arg(short, long, default_value = "http://localhost:9545")]
         rpc_url: String,
+    },
+
+    /// Deployer account management
+    #[command(subcommand)]
+    Deployer(DeployerCommands),
+}
+
+#[derive(Subcommand)]
+enum DeployerCommands {
+    /// Generate a new deployer account
+    Generate {
+        /// Output directory for keys
+        #[arg(short, long, default_value = "./deployer")]
+        output: PathBuf,
+        /// Network name
+        #[arg(short, long, default_value = "silverbitcoin")]
+        network: String,
+        /// RPC URL
+        #[arg(short, long, default_value = "https://rpc.silverbitcoin.org")]
+        rpc_url: String,
+    },
+
+    /// Show deployer account information
+    Show {
+        /// Deployer directory
+        #[arg(short, long, default_value = "./deployer")]
+        dir: PathBuf,
+    },
+
+    /// Deploy tokens using deployer account
+    Deploy {
+        /// Deployer directory
+        #[arg(short, long, default_value = "./deployer")]
+        dir: PathBuf,
+        /// Verbose output
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
@@ -261,7 +308,7 @@ async fn main() -> Result<()> {
             from,
             fuel_budget,
             rpc_url,
-        } => TransferCommand::transfer(&to, amount, from, fuel_budget, &rpc_url),
+        } => TransferCommand::transfer(&to, amount, from, fuel_budget, &rpc_url).await,
         Commands::Query(cmd) => handle_query(cmd),
         Commands::Call {
             package,
@@ -292,6 +339,204 @@ async fn main() -> Result<()> {
             sender,
             rpc_url,
         } => SimulateCommand::simulate(&tx_type, &params, sender, &rpc_url),
+        Commands::Deployer(cmd) => handle_deployer(cmd),
+    }
+}
+
+fn handle_deployer(cmd: DeployerCommands) -> Result<()> {
+    use crate::deployer::DeployerKeypair;
+
+    match cmd {
+        DeployerCommands::Generate {
+            output,
+            network,
+            rpc_url,
+        } => {
+            println!("Generating deployer account...");
+            let keypair = match DeployerKeypair::generate() {
+                Ok(kp) => kp,
+                Err(crate::deployer::DeployerError::KeypairGenerationFailed(msg)) => {
+                    anyhow::bail!("Keypair generation failed: {}", msg);
+                }
+                Err(crate::deployer::DeployerError::AddressDerivationFailed(msg)) => {
+                    anyhow::bail!("Address derivation failed: {}", msg);
+                }
+                Err(e) => {
+                    anyhow::bail!("Failed to generate keypair: {}", e);
+                }
+            };
+            let paths = keypair.save(&output)?;
+
+            println!("\n✅ Deployer account created successfully!\n");
+            println!("Address: {}", keypair.address_hex());
+            println!("Network: {}", network);
+            println!("RPC URL: {}\n", rpc_url);
+            println!("Files saved to: {}\n", output.display());
+            println!("  - Private Key: {}", paths.private_key.display());
+            println!("  - Public Key: {}", paths.public_key.display());
+            println!("  - Address: {}", paths.address.display());
+            println!("  - Config: {}\n", paths.config.display());
+            println!("⚠️  Keep the private key file secure!\n");
+            
+            // Verify by loading the keypair back
+            match DeployerKeypair::load(&paths.private_key, &paths.public_key) {
+                Ok(loaded_keypair) => {
+                    if loaded_keypair.address_hex() == keypair.address_hex() {
+                        println!("✅ Keypair verification: PASSED");
+                        println!("   Loaded address matches generated address\n");
+                    } else {
+                        eprintln!("❌ Keypair verification: FAILED");
+                        eprintln!("   Address mismatch!\n");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Could not verify keypair: {}\n", e);
+                }
+            }
+
+            Ok(())
+        }
+        DeployerCommands::Show { dir } => {
+            let config_path = dir.join("deployer.env");
+            if !config_path.exists() {
+                anyhow::bail!("Deployer config not found at {}", config_path.display());
+            }
+
+            let config = crate::deployer::DeployerConfig::load(&config_path)?;
+            println!("\n📋 Deployer Account Information\n");
+            println!("Address: {}", config.deployer_address);
+            println!("Network: {}", config.network);
+            println!("RPC URL: {}", config.rpc_url);
+            println!("Creation Fee: {}", config.creation_fee);
+            println!("Token Owner: {}\n", config.token_owner);
+            
+            // Get current balance
+            match config.get_balance() {
+                Ok(balance) => {
+                    println!("💰 Current Balance: {} satoshis", balance);
+                    println!("   ({} BTC)\n", balance as f64 / 100_000_000.0);
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Could not retrieve balance: {}\n", e);
+                }
+            }
+            
+            // Verify configuration is valid and save it back (for persistence)
+            let backup_path = dir.join("deployer.env.backup");
+            if let Err(e) = config.save(&backup_path) {
+                eprintln!("⚠️  Could not create backup: {}", e);
+            } else {
+                println!("✅ Configuration backup saved to: {}", backup_path.display());
+            }
+
+            Ok(())
+        }
+        DeployerCommands::Deploy { dir, verbose } => {
+            let config_path = dir.join("deployer.env");
+            if !config_path.exists() {
+                anyhow::bail!("Deployer config not found at {}", config_path.display());
+            }
+
+            let config = crate::deployer::DeployerConfig::load(&config_path)?;
+            
+            if verbose {
+                println!("\n🚀 Deploying tokens with deployer account (VERBOSE MODE)...\n");
+                println!("Config file: {}", config_path.display());
+            } else {
+                println!("\n🚀 Deploying tokens with deployer account...\n");
+            }
+            
+            println!("Address: {}", config.deployer_address);
+            println!("Network: {}", config.network);
+            println!("RPC URL: {}\n", config.rpc_url);
+            
+            if verbose {
+                println!("Private Key: {}", config.deployer_private_key);
+                println!("Public Key: {}", config.deployer_public_key);
+                println!("Creation Fee: {}", config.creation_fee);
+                println!("Token Owner: {}\n", config.token_owner);
+            }
+
+            // Verify deployer is funded
+            let min_balance = config.creation_fee.parse::<u128>()
+                .unwrap_or(1_000_000);
+            
+            match config.verify_funded(min_balance) {
+                Ok(balance) => {
+                    if verbose {
+                        println!("✅ Deployer account is funded!");
+                        println!("   Balance: {} satoshis\n", balance);
+                    }
+                }
+                Err(crate::deployer::DeployerError::DeployerNotFunded) => {
+                    eprintln!("❌ Deployer account is not funded");
+                    anyhow::bail!("Deployer not funded");
+                }
+                Err(crate::deployer::DeployerError::InsufficientBalance { required, available }) => {
+                    eprintln!("❌ Insufficient balance");
+                    eprintln!("   Required: {} satoshis", required);
+                    eprintln!("   Available: {} satoshis\n", available);
+                    anyhow::bail!("Insufficient balance");
+                }
+                Err(e) => {
+                    eprintln!("❌ Deployer account verification failed: {}", e);
+                    anyhow::bail!("Verification failed");
+                }
+            }
+
+            // Deploy sample tokens
+            let tokens = vec![
+                ("SilverBitcoin", "SBTC", 21_000_000u128),
+                ("SilverToken", "SILVER", 1_000_000_000u128),
+            ];
+
+            let mut deployed_tokens = Vec::new();
+            for (name, symbol, supply) in tokens {
+                match config.deploy_token(name, symbol, supply) {
+                    Ok(tx_hash) => {
+                        deployed_tokens.push((symbol, tx_hash.clone()));
+                        println!("✅ Deployed {}: {}", symbol, tx_hash);
+                        if verbose {
+                            println!("   Name: {}", name);
+                            println!("   Supply: {}\n", supply);
+                        }
+                    }
+                    Err(crate::deployer::DeployerError::DeploymentFailed(msg)) => {
+                        eprintln!("❌ Deployment failed for {}: {}", symbol, msg);
+                    }
+                    Err(crate::deployer::DeployerError::TransactionFailed(msg)) => {
+                        eprintln!("❌ Transaction failed for {}: {}", symbol, msg);
+                    }
+                    Err(crate::deployer::DeployerError::RpcConnectionFailed(msg)) => {
+                        eprintln!("❌ RPC connection failed for {}: {}", symbol, msg);
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to deploy {}: {}", symbol, e);
+                    }
+                }
+            }
+
+            // Save deployment results
+            let results_path = dir.join("deployment_results.txt");
+            let mut results = String::from("=== Token Deployment Results ===\n\n");
+            results.push_str(&format!("Deployer: {}\n", config.deployer_address));
+            results.push_str(&format!("Network: {}\n", config.network));
+            results.push_str(&format!("RPC URL: {}\n\n", config.rpc_url));
+            results.push_str("Deployed Tokens:\n");
+            
+            for (symbol, tx_hash) in &deployed_tokens {
+                results.push_str(&format!("  {} - {}\n", symbol, tx_hash));
+            }
+
+            std::fs::write(&results_path, results)
+                .map_err(|e| anyhow::anyhow!("Failed to save results: {}", e))?;
+
+            println!("\n✅ Deployment complete!");
+            println!("Results saved to: {}", results_path.display());
+            println!("Deployed {} tokens", deployed_tokens.len());
+
+            Ok(())
+        }
     }
 }
 
@@ -303,8 +548,8 @@ fn handle_keygen(cmd: KeygenCommands) -> Result<()> {
             output,
             encrypt,
         } => {
-            let sig_scheme = parse_signature_scheme(scheme)?;
-            KeygenCommand::generate(&format, sig_scheme, output, encrypt)
+            KeygenCommand::generate(&format, scheme, output, encrypt)?;
+            Ok(())
         }
         KeygenCommands::Mnemonic { words, output } => {
             KeygenCommand::generate_mnemonic(words, output)
@@ -315,8 +560,7 @@ fn handle_keygen(cmd: KeygenCommands) -> Result<()> {
             path,
             output,
         } => {
-            let sig_scheme = parse_signature_scheme(scheme)?;
-            KeygenCommand::from_mnemonic(phrase, sig_scheme, path, output)
+            KeygenCommand::from_mnemonic(phrase, scheme, path, output)
         }
         KeygenCommands::Import {
             input,
@@ -357,15 +601,4 @@ fn handle_devnet(cmd: DevNetCommands) -> Result<()> {
         DevNetCommands::Stop => DevNetCommand::stop(),
         DevNetCommands::Faucet { address, amount } => DevNetCommand::faucet(&address, amount),
     }
-}
-
-fn parse_signature_scheme(scheme: Option<String>) -> Result<Option<SignatureScheme>> {
-    Ok(match scheme.as_deref() {
-        Some("sphincs-plus") | Some("sphincs") => Some(SignatureScheme::SphincsPlus),
-        Some("dilithium3") | Some("dilithium") => Some(SignatureScheme::Dilithium3),
-        Some("secp512r1") | Some("secp") => Some(SignatureScheme::Secp512r1),
-        Some("hybrid") => Some(SignatureScheme::Hybrid),
-        Some(s) => anyhow::bail!("Unknown signature scheme: {}", s),
-        None => None,
-    })
 }
